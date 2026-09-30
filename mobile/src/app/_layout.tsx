@@ -37,6 +37,10 @@ export default function RootLayout() {
           title: "Nearby Devices",
         }}
       />
+      <Stack.Screen
+        name="locations"
+        options={{ title: "Shared Map" }}
+      />
     </Stack>
   );
 }

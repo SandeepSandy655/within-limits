@@ -1,15 +1,20 @@
 const mongoose = require("mongoose");
 
 async function connectDatabase() {
+  const uri = process.env.MONGODB_URI;
+  if (!uri) {
+    throw new Error("MONGODB_URI is not set. Add it to backend/.env.");
+  }
+
   try {
-    await mongoose.connect(process.env.MONGODB_URI);
-
-    console.log("MongoDB connected successfully");
+    await mongoose.connect(uri, {
+      serverSelectionTimeoutMS: 10_000,
+      maxPoolSize: 10,
+    });
+    console.log("[database] MongoDB connected");
   } catch (error) {
-    console.error("MongoDB connection failed:");
-    console.error(error);
-
-    process.exit(1);
+    console.error(`[database] MongoDB connection failed: ${error.message}`);
+    throw error;
   }
 }
 

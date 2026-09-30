@@ -1,232 +1,137 @@
 const Connection = require("../models/Connection");
 const Device = require("../models/Device");
 
-function normalizeConnectionCode(connectionCode) {
-  return String(connectionCode || "").replace(/\D/g, "");
-}
-
-async function enrichConnection(connection, currentDeviceId) {
-  const plain = connection.toObject
-    ? connection.toObject()
-    : { ...connection };
-
-  const [requester, receiver] = await Promise.all([
-    Device.findOne({ deviceId: plain.requesterId }).lean(),
-    Device.findOne({ deviceId: plain.receiverId }).lean()
-  ]);
-
-  plain.requesterName = requester?.deviceName || plain.requesterId;
-  plain.receiverName = receiver?.deviceName || plain.receiverId;
-
-  if (currentDeviceId) {
-    const isRequester = plain.requesterId === currentDeviceId;
-
-    plain.peerDeviceId = isRequester
-      ? plain.receiverId
-      : plain.requesterId;
-
-    plain.peerDeviceName = isRequester
-      ? plain.receiverName
-      : plain.requesterName;
-
-    const peer = isRequester ? receiver : requester;
-    plain.peerStatus = peer?.status || "offline";
-    plain.peerConnectionCode = peer?.connectionCode || null;
+function requireDeviceId(deviceId, fieldName = "deviceId") {
+  if (typeof deviceId !== "string" || !deviceId.trim()) {
+    throw new Error(`${fieldName} is required`);
   }
-
-  return plain;
-}
-
-async function findPair(deviceA, deviceB) {
-  return Connection.findOne({
-    $or: [
-      { requesterId: deviceA, receiverId: deviceB },
-      { requesterId: deviceB, receiverId: deviceA }
-    ]
-  }).sort({ createdAt: -1 });
+  return deviceId.trim();
 }
 
 async function sendConnectionRequest(requesterId, receiverId) {
-  if (!requesterId || !receiverId) {
-    throw new Error("requesterId and receiverId are required");
-  }
+  const requester = requireDeviceId(requesterId, "requesterId");
+  const receiver = requireDeviceId(receiverId, "receiverId");
+  if (requester === receiver) throw new Error("A device cannot connect to itself");
 
-  if (requesterId === receiverId) {
-    throw new Error("You cannot connect to your own device");
-  }
-
-  const [requester, receiver] = await Promise.all([
-    Device.findOne({ deviceId: requesterId }),
-    Device.findOne({ deviceId: receiverId })
+  const [requesterDevice, receiverDevice] = await Promise.all([
+    Device.exists({ deviceId: requester }),
+    Device.exists({ deviceId: receiver }),
   ]);
+  if (!requesterDevice) throw new Error(`Requester device ${requester} is not registered`);
+  if (!receiverDevice) throw new Error(`Receiver device ${receiver} is not registered`);
 
-  if (!requester) {
-    throw new Error("Requester device not found");
-  }
-
-  if (!receiver) {
-    throw new Error("Receiver device not found");
-  }
-
-  const existing = await findPair(requesterId, receiverId);
-
-  if (existing) {
-    if (existing.status === "accepted") {
-      throw new Error("These devices are already connected");
-    }
-
-    if (existing.status === "blocked") {
-      throw new Error("This connection is blocked");
-    }
-
-    if (existing.status === "pending") {
-      if (existing.requesterId === requesterId) {
-        throw new Error("A connection request is already pending");
-      }
-
-      throw new Error(
-        "This device already sent you a request. Open Connection Requests to accept it."
-      );
-    }
-
-    if (existing.status === "rejected") {
-      existing.requesterId = requesterId;
-      existing.receiverId = receiverId;
-      existing.status = "pending";
-      existing.acceptedAt = null;
-      existing.createdAt = new Date();
-      await existing.save();
-
-      return enrichConnection(existing, requesterId);
-    }
-  }
-
-  const connection = await Connection.create({
-    requesterId,
-    receiverId,
-    status: "pending"
+  const existing = await Connection.findOne({
+    $or: [
+      { requesterId: requester, receiverId: receiver },
+      { requesterId: receiver, receiverId: requester },
+    ],
   });
 
-  return enrichConnection(connection, requesterId);
+  if (existing) {
+    if (existing.status === "accepted") throw new Error("Devices are already connected");
+    if (existing.status === "pending") throw new Error("Connection request already exists");
+    if (existing.status === "blocked") throw new Error("This connection is blocked");
+
+    existing.requesterId = requester;
+    existing.receiverId = receiver;
+    existing.status = "pending";
+    existing.createdAt = new Date();
+    existing.acceptedAt = null;
+    return existing.save();
+  }
+
+  return Connection.create({
+    requesterId: requester,
+    receiverId: receiver,
+    status: "pending",
+  });
 }
 
 async function sendConnectionRequestByCode(requesterId, connectionCode) {
-  if (!requesterId) {
-    throw new Error("requesterId is required");
-  }
+  const requester = requireDeviceId(requesterId, "requesterId");
+  const code = String(connectionCode ?? "").replace(/\D/g, "");
+  if (code.length !== 8) throw new Error("Connection code must be 8 digits");
 
-  const normalizedCode = normalizeConnectionCode(connectionCode);
-
-  if (normalizedCode.length !== 8) {
-    throw new Error("Connection code must be 8 digits");
-  }
-
-  const receiver = await Device.findOne({
-    connectionCode: normalizedCode
-  });
-
-  if (!receiver) {
-    throw new Error("No device found with this connection code");
-  }
-
-  return sendConnectionRequest(requesterId, receiver.deviceId);
+  const receiver = await Device.findOne({ connectionCode: code }).select("deviceId").lean();
+  if (!receiver) throw new Error("No device found with this connection code");
+  return sendConnectionRequest(requester, receiver.deviceId);
 }
 
-async function acceptConnection(connectionId) {
-  if (!connectionId) {
-    throw new Error("connectionId is required");
-  }
-
+async function decideConnection(connectionId, deviceId, status) {
+  if (!connectionId) throw new Error("connectionId is required");
+  const actor = requireDeviceId(deviceId);
   const connection = await Connection.findById(connectionId);
-
-  if (!connection) {
-    throw new Error("Connection request not found");
+  if (!connection) throw new Error("Connection request not found");
+  if (connection.receiverId !== actor) {
+    throw new Error("Only the receiving device can respond to this request");
   }
-
-  if (connection.status === "accepted") {
-    return enrichConnection(connection);
-  }
-
   if (connection.status !== "pending") {
-    throw new Error("Only pending requests can be accepted");
+    throw new Error(`Connection request is already ${connection.status}`);
   }
 
-  connection.status = "accepted";
-  connection.acceptedAt = new Date();
-  await connection.save();
-
-  return enrichConnection(connection, connection.receiverId);
+  connection.status = status;
+  if (status === "accepted") connection.acceptedAt = new Date();
+  return connection.save();
 }
 
-async function rejectConnection(connectionId) {
-  if (!connectionId) {
-    throw new Error("connectionId is required");
-  }
+function acceptConnection(connectionId, deviceId) {
+  return decideConnection(connectionId, deviceId, "accepted");
+}
 
+function rejectConnection(connectionId, deviceId) {
+  return decideConnection(connectionId, deviceId, "rejected");
+}
+
+async function disconnectDevice(connectionId, deviceId) {
+  if (!connectionId) throw new Error("connectionId is required");
+  const actor = requireDeviceId(deviceId);
   const connection = await Connection.findById(connectionId);
-
-  if (!connection) {
-    throw new Error("Connection request not found");
+  if (!connection || connection.status !== "accepted") {
+    throw new Error("Active connection not found");
   }
-
-  if (connection.status !== "pending") {
-    throw new Error("Only pending requests can be rejected");
+  if (connection.requesterId !== actor && connection.receiverId !== actor) {
+    throw new Error("This device is not part of the connection");
   }
-
-  connection.status = "rejected";
-  connection.acceptedAt = null;
-  await connection.save();
-
-  return enrichConnection(connection, connection.receiverId);
+  const disconnected = connection.toObject();
+  await connection.deleteOne();
+  return disconnected;
 }
 
 async function getDeviceConnections(deviceId) {
-  if (!deviceId) {
-    throw new Error("deviceId is required");
-  }
-
-  const connections = await Connection.find({
-    status: "accepted",
-    $or: [
-      { requesterId: deviceId },
-      { receiverId: deviceId }
-    ]
-  }).sort({ acceptedAt: -1, createdAt: -1 });
-
-  return Promise.all(
-    connections.map((connection) =>
-      enrichConnection(connection, deviceId)
-    )
-  );
+  const id = requireDeviceId(deviceId);
+  return Connection.find({
+    $or: [{ requesterId: id }, { receiverId: id }],
+  }).sort({ createdAt: -1 }).lean();
 }
 
 async function getPendingRequests(deviceId) {
-  if (!deviceId) {
-    throw new Error("deviceId is required");
-  }
-
-  const requests = await Connection.find({
-    receiverId: deviceId,
-    status: "pending"
-  }).sort({ createdAt: -1 });
-
-  return Promise.all(
-    requests.map((connection) =>
-      enrichConnection(connection, deviceId)
-    )
-  );
+  const id = requireDeviceId(deviceId);
+  return Connection.find({ receiverId: id, status: "pending" })
+    .sort({ createdAt: -1 })
+    .lean();
 }
 
-async function areDevicesPaired(deviceA, deviceB) {
-  const connection = await Connection.findOne({
+async function areDevicesPaired(firstDeviceId, secondDeviceId) {
+  if (!firstDeviceId || !secondDeviceId) return false;
+  return Boolean(await Connection.exists({
     status: "accepted",
     $or: [
-      { requesterId: deviceA, receiverId: deviceB },
-      { requesterId: deviceB, receiverId: deviceA }
-    ]
-  });
+      { requesterId: firstDeviceId, receiverId: secondDeviceId },
+      { requesterId: secondDeviceId, receiverId: firstDeviceId },
+    ],
+  }));
+}
 
-  return Boolean(connection);
+async function getConnectedDeviceIds(deviceId) {
+  const id = requireDeviceId(deviceId);
+  const connections = await Connection.find({
+    status: "accepted",
+    $or: [{ requesterId: id }, { receiverId: id }],
+  }).select("requesterId receiverId").lean();
+
+  return connections.map((connection) =>
+    connection.requesterId === id ? connection.receiverId : connection.requesterId
+  );
 }
 
 module.exports = {
@@ -234,7 +139,9 @@ module.exports = {
   sendConnectionRequestByCode,
   acceptConnection,
   rejectConnection,
+  disconnectDevice,
   getDeviceConnections,
   getPendingRequests,
-  areDevicesPaired
+  areDevicesPaired,
+  getConnectedDeviceIds,
 };

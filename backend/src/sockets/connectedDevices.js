@@ -62,6 +62,12 @@ function notifyConnectionRejected(connection) {
   emitToDevice(connection.receiverId, "connection-rejected", payload);
 }
 
+function notifyConnectionDisconnected(connection) {
+  const payload = { connectionId: String(connection._id) };
+  emitToDevice(connection.requesterId, "connection-disconnected", payload);
+  emitToDevice(connection.receiverId, "connection-disconnected", payload);
+}
+
 module.exports = {
   setIo,
   setDeviceSocket,
@@ -71,5 +77,6 @@ module.exports = {
   notifyConnectionRequest,
   notifyConnectionAccepted,
   notifyConnectionRejected,
+  notifyConnectionDisconnected,
   connectedDevices
 };

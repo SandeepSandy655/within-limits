@@ -77,7 +77,8 @@ export default function RequestsScreen() {
   async function handleAccept(connectionId: string) {
     try {
       setProcessingId(connectionId);
-      await acceptConnection(connectionId);
+      const profile = await getDeviceProfile();
+      await acceptConnection(connectionId, profile.deviceId);
       setRequests((current) =>
         current.filter((request) => request._id !== connectionId)
       );
@@ -97,7 +98,8 @@ export default function RequestsScreen() {
   async function handleReject(connectionId: string) {
     try {
       setProcessingId(connectionId);
-      await rejectConnection(connectionId);
+      const profile = await getDeviceProfile();
+      await rejectConnection(connectionId, profile.deviceId);
       setRequests((current) =>
         current.filter((request) => request._id !== connectionId)
       );
@@ -167,7 +169,7 @@ export default function RequestsScreen() {
         <View style={styles.empty}>
           <Text style={styles.emptyTitle}>No requests</Text>
           <Text style={styles.emptyText}>
-            You don't have any pending connection requests.
+            You don&apos;t have any pending connection requests.
           </Text>
         </View>
       ) : (

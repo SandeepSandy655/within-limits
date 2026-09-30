@@ -1,306 +1,49 @@
-const Connection = require("../models/Connection");
+const connectionService = require("../services/connectionService");
+const { getDeviceSocket } = require("./connectedDevices");
 
-async function areDevicesConnected(
-  requesterId,
-  receiverId
-) {
-  const connection = await Connection.findOne({
-    status: "accepted",
-    $or: [
-      {
-        requesterId,
-        receiverId
-      },
-      {
-        requesterId: receiverId,
-        receiverId: requesterId
+const SIGNAL_EVENTS = [
+  ["webrtc-offer", "offer"],
+  ["webrtc-answer", "answer"],
+  ["webrtc-ice-candidate", "candidate"],
+];
+
+function registerWebRtcHandlers(io, socket) {
+  for (const [eventName, payloadKey] of SIGNAL_EVENTS) {
+    socket.on(eventName, async (data = {}) => {
+      data = data && typeof data === "object" ? data : {};
+      const { from, to } = data;
+
+      if (!socket.deviceId || from !== socket.deviceId || !to || data[payloadKey] === undefined) {
+        socket.emit("webrtc-error", {
+          message: "The signaling sender, recipient, or payload is invalid.",
+        });
+        return;
       }
-    ]
-  });
 
-  return !!connection;
-}
-
-function webrtcHandler(io) {
-  // deviceId -> socketId
-  const connectedDevices = new Map();
-
-  io.on("connection", (socket) => {
-    console.log(
-      `[WEBRTC] Socket connected: ${socket.id}`
-    );
-
-    // --------------------------------------------------
-    // Register this socket with a device
-    // --------------------------------------------------
-
-    socket.on("webrtc-register", (data) => {
       try {
-        const { deviceId } = data || {};
-
-        if (!deviceId) {
-          socket.emit("webrtc-error", {
-            message: "deviceId is required"
-          });
-
+        const allowed = await connectionService.areDevicesPaired(from, to);
+        if (!allowed) {
+          socket.emit("webrtc-error", { message: "Devices are not connected." });
           return;
         }
 
-        socket.deviceId = deviceId;
+        const targetSocketId = getDeviceSocket(to);
+        if (!targetSocketId) {
+          socket.emit("webrtc-error", { message: "Target device is offline." });
+          return;
+        }
 
-        connectedDevices.set(
-          deviceId,
-          socket.id
-        );
-
-        console.log(
-          `[WEBRTC] Device registered: ${deviceId}`
-        );
-
-      } catch (error) {
-        console.error(
-          "[WEBRTC] Register error:",
-          error
-        );
-      }
-    });
-
-    // --------------------------------------------------
-    // SEND OFFER
-    // --------------------------------------------------
-
-    socket.on("webrtc-offer", async (data) => {
-      try {
-        const {
+        io.to(targetSocketId).emit(eventName, {
           from,
           to,
-          offer
-        } = data || {};
-
-        if (!from || !to || !offer) {
-          socket.emit("webrtc-error", {
-            message:
-              "from, to and offer are required"
-          });
-
-          return;
-        }
-
-        const connected =
-          await areDevicesConnected(
-            from,
-            to
-          );
-
-        if (!connected) {
-          socket.emit("webrtc-error", {
-            message:
-              "Devices do not have an accepted connection"
-          });
-
-          return;
-        }
-
-        const targetSocketId =
-          connectedDevices.get(to);
-
-        if (!targetSocketId) {
-          socket.emit("webrtc-error", {
-            message:
-              "Target device is not online"
-          });
-
-          return;
-        }
-
-        io.to(targetSocketId).emit(
-          "webrtc-offer",
-          {
-            from,
-            to,
-            offer
-          }
-        );
-
-        console.log(
-          `[WEBRTC] OFFER: ${from} → ${to}`
-        );
-
+          [payloadKey]: data[payloadKey],
+        });
       } catch (error) {
-        console.error(
-          "[WEBRTC] Offer error:",
-          error
-        );
+        console.error(`[socket:${eventName}] ${error.message}`);
+        socket.emit("webrtc-error", { message: "Unable to relay signaling data." });
       }
     });
-
-    // --------------------------------------------------
-    // SEND ANSWER
-    // --------------------------------------------------
-
-    socket.on("webrtc-answer", async (data) => {
-      try {
-        const {
-          from,
-          to,
-          answer
-        } = data || {};
-
-        if (!from || !to || !answer) {
-          socket.emit("webrtc-error", {
-            message:
-              "from, to and answer are required"
-          });
-
-          return;
-        }
-
-        const connected =
-          await areDevicesConnected(
-            from,
-            to
-          );
-
-        if (!connected) {
-          socket.emit("webrtc-error", {
-            message:
-              "Devices do not have an accepted connection"
-          });
-
-          return;
-        }
-
-        const targetSocketId =
-          connectedDevices.get(to);
-
-        if (!targetSocketId) {
-          socket.emit("webrtc-error", {
-            message:
-              "Target device is not online"
-          });
-
-          return;
-        }
-
-        io.to(targetSocketId).emit(
-          "webrtc-answer",
-          {
-            from,
-            to,
-            answer
-          }
-        );
-
-        console.log(
-          `[WEBRTC] ANSWER: ${from} → ${to}`
-        );
-
-      } catch (error) {
-        console.error(
-          "[WEBRTC] Answer error:",
-          error
-        );
-      }
-    });
-
-    // --------------------------------------------------
-    // SEND ICE CANDIDATE
-    // --------------------------------------------------
-
-    socket.on(
-      "webrtc-ice-candidate",
-      async (data) => {
-        try {
-          const {
-            from,
-            to,
-            candidate
-          } = data || {};
-
-          if (
-            !from ||
-            !to ||
-            !candidate
-          ) {
-            socket.emit("webrtc-error", {
-              message:
-                "from, to and candidate are required"
-            });
-
-            return;
-          }
-
-          const connected =
-            await areDevicesConnected(
-              from,
-              to
-            );
-
-          if (!connected) {
-            socket.emit("webrtc-error", {
-              message:
-                "Devices do not have an accepted connection"
-            });
-
-            return;
-          }
-
-          const targetSocketId =
-            connectedDevices.get(to);
-
-          if (!targetSocketId) {
-            socket.emit("webrtc-error", {
-              message:
-                "Target device is not online"
-            });
-
-            return;
-          }
-
-          io.to(targetSocketId).emit(
-            "webrtc-ice-candidate",
-            {
-              from,
-              to,
-              candidate
-            }
-          );
-
-          console.log(
-            `[WEBRTC] ICE: ${from} → ${to}`
-          );
-
-        } catch (error) {
-          console.error(
-            "[WEBRTC] ICE error:",
-            error
-          );
-        }
-      }
-    );
-
-    // --------------------------------------------------
-    // DISCONNECT
-    // --------------------------------------------------
-
-    socket.on("disconnect", () => {
-      const deviceId = socket.deviceId;
-
-      if (
-        deviceId &&
-        connectedDevices.get(deviceId) ===
-          socket.id
-      ) {
-        connectedDevices.delete(
-          deviceId
-        );
-
-        console.log(
-          `[WEBRTC] Device disconnected: ${deviceId}`
-        );
-      }
-    });
-  });
+  }
 }
 
-module.exports = webrtcHandler;
+module.exports = registerWebRtcHandlers;

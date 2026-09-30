@@ -2,16 +2,14 @@ import {
   io,
   Socket,
 } from "socket.io-client";
-
-const SERVER_URL =
-  "http://192.168.1.11:5000";
+import { SERVER_URL } from "./serverConfig";
 
 let socket: Socket | null = null;
 
 export function connectSocket(
   deviceId: string
 ): Socket {
-  if (socket?.connected) {
+  if (socket) {
     return socket;
   }
 
@@ -31,10 +29,12 @@ export function connectSocket(
     socket?.emit("device-online", {
       deviceId,
     });
+  });
 
-    socket?.emit("webrtc-register", {
-      deviceId,
-    });
+  socket.on("device-error", (data) => {
+    console.error(
+      `[DEVICE] ${data?.code || "ERROR"}: ${data?.message || "Device setup failed."}`
+    );
   });
 
   socket.on(

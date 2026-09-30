@@ -1,465 +1,199 @@
 const deviceService = require("../services/deviceService");
 const connectionService = require("../services/connectionService");
 const {
+  getDeviceSocket,
   setDeviceSocket,
   removeDeviceSocket,
-  getDeviceSocket
+  notifyConnectionRequest,
+  notifyConnectionAccepted,
+  notifyConnectionRejected,
 } = require("./connectedDevices");
+const registerWebRtcHandlers = require("./webrtcHandler");
+const lastLocationUpdateByDevice = new Map();
+const MIN_LOCATION_UPDATE_INTERVAL_MS = 5_000;
+
+function emitDeviceError(socket, code, message) {
+  socket.emit("device-error", { code, message });
+}
+
+function isValidCoordinate(latitude, longitude) {
+  return (
+    Number.isFinite(latitude) &&
+    latitude >= -90 && latitude <= 90 &&
+    Number.isFinite(longitude) &&
+    longitude >= -180 && longitude <= 180
+  );
+}
+
+async function sendLatestPeerLocations(socket, deviceId) {
+  const peerIds = await connectionService.getConnectedDeviceIds(deviceId);
+  const peers = await Promise.all(peerIds.map((peerId) => deviceService.getDevice(peerId)));
+
+  for (const peer of peers) {
+    const coordinates = peer?.location?.coordinates;
+    if (!Array.isArray(coordinates) || coordinates.length !== 2) continue;
+
+    socket.emit("device-location", {
+      deviceId: peer.deviceId,
+      longitude: coordinates[0],
+      latitude: coordinates[1],
+      accuracy: null,
+      speed: null,
+      heading: null,
+    });
+  }
+}
+
+async function handleDeviceOnline(io, socket, data = {}) {
+  data = data && typeof data === "object" ? data : {};
+  const deviceId = typeof data.deviceId === "string" ? data.deviceId.trim() : "";
+  if (!deviceId) {
+    emitDeviceError(socket, "DEVICE_ID_REQUIRED", "deviceId is required.");
+    return;
+  }
+
+  try {
+    const device = await deviceService.getDevice(deviceId);
+    if (!device) {
+      emitDeviceError(
+        socket,
+        "DEVICE_NOT_REGISTERED",
+        "Register this device with the same backend before opening its socket. Check that the app's HTTP and Socket.IO URLs match."
+      );
+      console.warn(`[socket:device-online] Unregistered device rejected (${deviceId}).`);
+      return;
+    }
+
+    socket.deviceId = deviceId;
+    await deviceService.updateDeviceStatus(deviceId, "online");
+    if (!socket.connected) {
+      await deviceService.updateDeviceStatus(deviceId, "offline");
+      return;
+    }
+
+    const previousSocketId = getDeviceSocket(deviceId);
+    setDeviceSocket(deviceId, socket.id);
+
+    if (previousSocketId && previousSocketId !== socket.id) {
+      io.sockets.sockets.get(previousSocketId)?.disconnect(true);
+    }
+
+    console.log(`[socket] Device online: ${deviceId}`);
+    io.emit("device-status", { deviceId, status: "online" });
+    await sendLatestPeerLocations(socket, deviceId);
+  } catch (error) {
+    console.error(`[socket:device-online] ${error.message}`);
+    emitDeviceError(socket, "DEVICE_ONLINE_FAILED", "Unable to register this device as online.");
+  }
+}
+
+async function handleDeviceLocation(io, socket, data = {}) {
+  data = data && typeof data === "object" ? data : {};
+  const { deviceId, latitude, longitude, accuracy, speed, heading } = data;
+  if (!socket.deviceId || deviceId !== socket.deviceId) {
+    emitDeviceError(socket, "DEVICE_ID_MISMATCH", "Location sender does not match the registered socket device.");
+    return;
+  }
+
+  if (!isValidCoordinate(latitude, longitude)) {
+    emitDeviceError(socket, "INVALID_LOCATION", "Latitude or longitude is outside the valid range.");
+    return;
+  }
+
+  const now = Date.now();
+  const previousUpdate = lastLocationUpdateByDevice.get(deviceId) || 0;
+  if (now - previousUpdate < MIN_LOCATION_UPDATE_INTERVAL_MS) return;
+  lastLocationUpdateByDevice.set(deviceId, now);
+
+  try {
+    await deviceService.updateDeviceLocation(deviceId, latitude, longitude);
+    await deviceService.saveLocationHistory(deviceId, latitude, longitude, accuracy, speed, heading);
+
+    const peers = await connectionService.getConnectedDeviceIds(deviceId);
+    const payload = {
+      deviceId,
+      latitude,
+      longitude,
+      accuracy: Number.isFinite(accuracy) ? accuracy : null,
+      speed: Number.isFinite(speed) ? speed : null,
+      heading: Number.isFinite(heading) ? heading : null,
+    };
+
+    for (const peerId of peers) {
+      const peerSocketId = getDeviceSocket(peerId);
+      if (peerSocketId) io.to(peerSocketId).emit("device-location", payload);
+    }
+  } catch (error) {
+    console.error(`[socket:device-location] ${error.message}`);
+    emitDeviceError(socket, "LOCATION_UPDATE_FAILED", "Unable to save the location update.");
+  }
+}
+
+async function handleConnectionRequest(socket, data = {}) {
+  data = data && typeof data === "object" ? data : {};
+  const { requesterId, receiverId } = data;
+  if (!socket.deviceId || requesterId !== socket.deviceId) {
+    socket.emit("connection-error", { message: "Requesting device does not match this socket." });
+    return;
+  }
+
+  try {
+    const connection = await connectionService.sendConnectionRequest(requesterId, receiverId);
+    notifyConnectionRequest(connection);
+    socket.emit("connection-request-sent", { connection });
+    console.log(`[connection] Request sent: ${requesterId} -> ${receiverId}`);
+  } catch (error) {
+    socket.emit("connection-error", { message: error.message });
+  }
+}
+
+async function handleConnectionDecision(socket, data = {}, decision) {
+  data = data && typeof data === "object" ? data : {};
+  if (!socket.deviceId) {
+    socket.emit("connection-error", { message: "Register this device before responding to a request." });
+    return;
+  }
+
+  try {
+    const action = decision === "accepted"
+      ? connectionService.acceptConnection
+      : connectionService.rejectConnection;
+    const connection = await action(data.connectionId, socket.deviceId);
+
+    if (decision === "accepted") notifyConnectionAccepted(connection);
+    else notifyConnectionRejected(connection);
+
+    socket.emit(`connection-${decision}`, { connection });
+    console.log(`[connection] ${decision}: ${connection.requesterId} <-> ${connection.receiverId}`);
+  } catch (error) {
+    socket.emit("connection-error", { message: error.message });
+  }
+}
 
 function socketHandler(io) {
   io.on("connection", (socket) => {
-    console.log("");
-    console.log("=================================");
-    console.log("NEW SOCKET CONNECTION");
-    console.log("Socket ID:", socket.id);
-    console.log("=================================");
+    console.log(`[socket] Connected: ${socket.id}`);
 
-    // =========================================
-    // DEVICE ONLINE
-    // =========================================
+    socket.on("device-online", (data) => handleDeviceOnline(io, socket, data));
+    socket.on("device-location", (data) => handleDeviceLocation(io, socket, data));
+    socket.on("send-connection-request", (data) => handleConnectionRequest(socket, data));
+    socket.on("accept-connection", (data) => handleConnectionDecision(socket, data, "accepted"));
+    socket.on("reject-connection", (data) => handleConnectionDecision(socket, data, "rejected"));
 
-    socket.on("device-online", async (data) => {
-      try {
-        const { deviceId } = data || {};
-
-        if (!deviceId) {
-          return;
-        }
-
-        socket.deviceId = deviceId;
-
-        setDeviceSocket(deviceId, socket.id);
-
-        await deviceService.updateDeviceStatus(
-          deviceId,
-          "online"
-        );
-
-        console.log(
-          `DEVICE ONLINE: ${deviceId}`
-        );
-
-        io.emit("device-status", {
-          deviceId,
-          status: "online"
-        });
-      } catch (error) {
-        console.error(
-          "DEVICE ONLINE ERROR:",
-          error
-        );
-      }
-    });
-
-    // =========================================
-    // LIVE LOCATION
-    // =========================================
-
-    socket.on("device-location", async (data) => {
-      try {
-        const {
-          deviceId,
-          latitude,
-          longitude,
-          accuracy,
-          speed,
-          heading
-        } = data;
-
-        if (!deviceId) {
-          return;
-        }
-
-        if (
-          typeof latitude !== "number" ||
-          latitude < -90 ||
-          latitude > 90
-        ) {
-          return;
-        }
-
-        if (
-          typeof longitude !== "number" ||
-          longitude < -180 ||
-          longitude > 180
-        ) {
-          return;
-        }
-
-        await deviceService.updateDeviceLocation(
-          deviceId,
-          latitude,
-          longitude,
-          accuracy
-        );
-
-        await deviceService.saveLocationHistory(
-          deviceId,
-          latitude,
-          longitude,
-          accuracy,
-          speed,
-          heading
-        );
-
-        io.emit("device-location", {
-          deviceId,
-          latitude,
-          longitude,
-          accuracy: accuracy || null,
-          speed: speed || null,
-          heading: heading || null
-        });
-      } catch (error) {
-        console.error(
-          "LOCATION UPDATE ERROR:",
-          error
-        );
-      }
-    });
-
-    // =========================================
-    // WEBRTC DEVICE REGISTRATION
-    // =========================================
-
-    socket.on("webrtc-register", (data) => {
-      const { deviceId } = data || {};
-
-      if (!deviceId) {
-        return;
-      }
-
-      socket.deviceId = deviceId;
-
-      setDeviceSocket(deviceId, socket.id);
-
-      console.log(
-        `[WEBRTC] Registered: ${deviceId}`
-      );
-    });
-
-    // =========================================
-    // SEND CONNECTION REQUEST
-    // =========================================
-
-    socket.on(
-      "send-connection-request",
-      async (data) => {
-        try {
-          const {
-            requesterId,
-            receiverId
-          } = data || {};
-
-          const connection =
-            await connectionService.sendConnectionRequest(
-              requesterId,
-              receiverId
-            );
-
-          const receiverSocket =
-            getDeviceSocket(receiverId);
-
-          if (receiverSocket) {
-            io.to(receiverSocket).emit(
-              "connection-request",
-              {
-                connection
-              }
-            );
-          }
-
-          socket.emit(
-            "connection-request-sent",
-            {
-              connection
-            }
-          );
-
-          console.log(
-            `[CONNECTION] ${requesterId} → ${receiverId}`
-          );
-        } catch (error) {
-          socket.emit(
-            "connection-error",
-            {
-              message: error.message
-            }
-          );
-        }
-      }
-    );
-
-    // =========================================
-    // ACCEPT CONNECTION
-    // =========================================
-
-    socket.on(
-      "accept-connection",
-      async (data) => {
-        try {
-          const {
-            connectionId
-          } = data || {};
-
-          const connection =
-            await connectionService.acceptConnection(
-              connectionId
-            );
-
-          const requesterSocket =
-            getDeviceSocket(
-              connection.requesterId
-            );
-
-          if (requesterSocket) {
-            io.to(requesterSocket).emit(
-              "connection-accepted",
-              {
-                connection
-              }
-            );
-          }
-
-          socket.emit(
-            "connection-accepted",
-            {
-              connection
-            }
-          );
-
-          console.log(
-            `[CONNECTION ACCEPTED] ${connection.requesterId} ↔ ${connection.receiverId}`
-          );
-        } catch (error) {
-          socket.emit(
-            "connection-error",
-            {
-              message: error.message
-            }
-          );
-        }
-      }
-    );
-
-    // =========================================
-    // REJECT CONNECTION
-    // =========================================
-
-    socket.on(
-      "reject-connection",
-      async (data) => {
-        try {
-          const {
-            connectionId
-          } = data || {};
-
-          const connection =
-            await connectionService.rejectConnection(
-              connectionId
-            );
-
-          const requesterSocket =
-            getDeviceSocket(
-              connection.requesterId
-            );
-
-          if (requesterSocket) {
-            io.to(requesterSocket).emit(
-              "connection-rejected",
-              {
-                connection
-              }
-            );
-          }
-
-          socket.emit(
-            "connection-rejected",
-            {
-              connection
-            }
-          );
-
-          console.log(
-            `[CONNECTION REJECTED] ${connection.requesterId} → ${connection.receiverId}`
-          );
-        } catch (error) {
-          socket.emit(
-            "connection-error",
-            {
-              message: error.message
-            }
-          );
-        }
-      }
-    );
-
-    // =========================================
-    // WEBRTC OFFER
-    // =========================================
-
-    socket.on("webrtc-offer", async (data) => {
-      try {
-        const {
-          from,
-          to,
-          offer
-        } = data || {};
-
-        const allowed =
-          await connectionService.areDevicesPaired(
-            from,
-            to
-          );
-
-        if (!allowed) {
-          socket.emit("webrtc-error", {
-            message:
-              "Devices are not connected"
-          });
-
-          return;
-        }
-
-        const targetSocket =
-          getDeviceSocket(to);
-
-        if (!targetSocket) {
-          socket.emit("webrtc-error", {
-            message:
-              "Target device is offline"
-          });
-
-          return;
-        }
-
-        io.to(targetSocket).emit(
-          "webrtc-offer",
-          {
-            from,
-            to,
-            offer
-          }
-        );
-      } catch (error) {
-        console.error(
-          "WebRTC offer error:",
-          error
-        );
-      }
-    });
-
-    // =========================================
-    // WEBRTC ANSWER
-    // =========================================
-
-    socket.on(
-      "webrtc-answer",
-      async (data) => {
-        try {
-          const {
-            from,
-            to,
-            answer
-          } = data || {};
-
-          const targetSocket =
-            getDeviceSocket(to);
-
-          if (!targetSocket) {
-            return;
-          }
-
-          io.to(targetSocket).emit(
-            "webrtc-answer",
-            {
-              from,
-              to,
-              answer
-            }
-          );
-        } catch (error) {
-          console.error(
-            "WebRTC answer error:",
-            error
-          );
-        }
-      }
-    );
-
-    // =========================================
-    // WEBRTC ICE
-    // =========================================
-
-    socket.on(
-      "webrtc-ice-candidate",
-      async (data) => {
-        try {
-          const {
-            from,
-            to,
-            candidate
-          } = data || {};
-
-          const targetSocket =
-            getDeviceSocket(to);
-
-          if (!targetSocket) {
-            return;
-          }
-
-          io.to(targetSocket).emit(
-            "webrtc-ice-candidate",
-            {
-              from,
-              to,
-              candidate
-            }
-          );
-        } catch (error) {
-          console.error(
-            "WebRTC ICE error:",
-            error
-          );
-        }
-      }
-    );
-
-    // =========================================
-    // DISCONNECT
-    // =========================================
+    registerWebRtcHandlers(io, socket);
 
     socket.on("disconnect", async (reason) => {
-      const deviceId =
-        socket.deviceId;
+      const deviceId = socket.deviceId;
+      if (!deviceId || getDeviceSocket(deviceId) !== socket.id) return;
 
-      console.log(
-        `Device disconnected: ${deviceId}`
-      );
-
-      if (!deviceId) {
-        return;
-      }
-
+      removeDeviceSocket(deviceId, socket.id);
+      lastLocationUpdateByDevice.delete(deviceId);
       try {
-        if (getDeviceSocket(deviceId) === socket.id) {
-          removeDeviceSocket(deviceId, socket.id);
-
-          await deviceService.updateDeviceStatus(
-            deviceId,
-            "offline"
-          );
-
-          io.emit("device-status", {
-            deviceId,
-            status: "offline"
-          });
-        }
+        await deviceService.updateDeviceStatus(deviceId, "offline");
+        io.emit("device-status", { deviceId, status: "offline" });
+        console.log(`[socket] Device offline: ${deviceId} (${reason})`);
       } catch (error) {
-        console.error(
-          "DISCONNECT ERROR:",
-          error
-        );
+        console.error(`[socket:disconnect] ${error.message}`);
       }
     });
   });

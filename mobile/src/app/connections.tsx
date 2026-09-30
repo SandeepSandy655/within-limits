@@ -1,126 +1,150 @@
 import { useCallback, useState } from "react";
+
 import {
   ActivityIndicator,
   Alert,
   FlatList,
-  RefreshControl,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from "react-native";
+
 import { useFocusEffect } from "expo-router";
 
-import {
-  Connection,
-  getMyConnections,
-} from "../services/connectionService";
 import { getDeviceProfile } from "../services/deviceStorage";
 
+import {
+  getMyConnections,
+  getConnectedDevices,
+  disconnectDevice,
+  Connection,
+} from "../services/connectionService";
+
 export default function ConnectionsScreen() {
-  const [connections, setConnections] = useState<Connection[]>(
-    []
-  );
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
+  const [connections, setConnections] =
+    useState<Connection[]>([]);
 
-  const loadConnections = useCallback(async () => {
-    const profile = await getDeviceProfile();
-    const data = await getMyConnections(profile.deviceId);
-    setConnections(data);
-  }, []);
+  const [loading, setLoading] =
+    useState(true);
+  const [deviceId, setDeviceId] = useState("");
+  const [deviceNames, setDeviceNames] = useState<Record<string, { name: string; status: string }>>({});
 
-  useFocusEffect(
-    useCallback(() => {
-      let active = true;
-
-      async function load() {
-        try {
-          setLoading(true);
-          await loadConnections();
-        } catch (error) {
-          if (active) {
-            Alert.alert(
-              "Error",
-              error instanceof Error
-                ? error.message
-                : "Unable to load connections."
-            );
-          }
-        } finally {
-          if (active) {
-            setLoading(false);
-          }
-        }
-      }
-
-      load();
-
-      return () => {
-        active = false;
-      };
-    }, [loadConnections])
-  );
-
-  async function refreshConnections() {
+  async function loadConnections() {
     try {
-      setRefreshing(true);
-      await loadConnections();
+      setLoading(true);
+
+      const device =
+        await getDeviceProfile();
+
+      const result =
+        await getMyConnections(
+          device.deviceId
+        );
+      const peers = await getConnectedDevices(device.deviceId);
+      setDeviceId(device.deviceId);
+      setDeviceNames(Object.fromEntries(peers.map((peer) => [peer.deviceId, { name: peer.deviceName, status: peer.status }])));
+      setConnections(result);
+    } catch (error) {
+      Alert.alert(
+        "Error",
+        error instanceof Error
+          ? error.message
+          : "Failed to load connections"
+      );
     } finally {
-      setRefreshing(false);
+      setLoading(false);
     }
   }
 
-  function renderConnection({ item }: { item: Connection }) {
-    const name =
-      item.peerDeviceName ||
-      (item.requesterName === item.peerDeviceName
-        ? item.receiverName
-        : item.requesterName) ||
-      item.peerDeviceId ||
-      "Unknown device";
+  function confirmDisconnect(connection: Connection) {
+    const peerId = connection.requesterId === deviceId ? connection.receiverId : connection.requesterId;
+    const peerName = deviceNames[peerId]?.name || peerId;
+    Alert.alert("Disconnect device?", `${peerName} will no longer receive your location, and you will no longer see theirs.`, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Disconnect", style: "destructive", onPress: async () => {
+        try {
+          await disconnectDevice(connection._id, deviceId);
+          setConnections((current) => current.filter((item) => item._id !== connection._id));
+        } catch (error) {
+          Alert.alert("Could not disconnect", error instanceof Error ? error.message : "Please try again.");
+        }
+      } },
+    ]);
+  }
 
+  useFocusEffect(
+    useCallback(() => {
+      loadConnections();
+    }, [])
+  );
+
+  if (loading) {
     return (
-      <View style={styles.card}>
-        <View style={styles.avatar}>
-          <Text style={styles.avatarText}>📱</Text>
-        </View>
-
-        <View style={styles.content}>
-          <Text style={styles.name}>{name}</Text>
-          <Text style={styles.status}>Connected</Text>
-        </View>
+      <View style={styles.center}>
+        <ActivityIndicator size="large" />
       </View>
     );
   }
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>My Connections</Text>
-      <Text style={styles.subtitle}>
-        Devices you have paired with
+      <Text style={styles.title}>
+        My Connections
       </Text>
 
-      {loading ? (
-        <ActivityIndicator size="large" style={styles.loader} />
-      ) : connections.length === 0 ? (
+      {connections.length === 0 ? (
         <View style={styles.empty}>
-          <Text style={styles.emptyTitle}>No connections yet</Text>
+          <Text style={styles.emptyTitle}>
+            No connections yet
+          </Text>
+
           <Text style={styles.emptyText}>
-            Enter another device's 8-digit connection code to
-            send a pairing request.
+            Connect to another device using
+            its connection code.
           </Text>
         </View>
       ) : (
         <FlatList
           data={connections}
-          keyExtractor={(item) => item._id}
-          renderItem={renderConnection}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={refreshConnections}
-            />
+          keyExtractor={(item) =>
+            item._id
           }
+          contentContainerStyle={
+            styles.list
+          }
+          renderItem={({ item }) => (
+            <View style={styles.card}>
+              <Text style={styles.device}>
+                Connected device
+              </Text>
+
+              <Text style={styles.deviceId}>
+                {deviceNames[item.requesterId === deviceId ? item.receiverId : item.requesterId]?.name ||
+                  (item.requesterId === deviceId ? item.receiverId : item.requesterId)}
+              </Text>
+              <Text style={styles.deviceDetail}>
+                {deviceNames[item.requesterId === deviceId ? item.receiverId : item.requesterId]?.status === "online" ? "Online" : "Offline"}
+              </Text>
+
+              <View
+                style={styles.statusContainer}
+              >
+                <View
+                  style={styles.statusDot}
+                />
+
+                <Text
+                  style={styles.status}
+                >
+                  Connected
+                </Text>
+              </View>
+              <TouchableOpacity style={styles.disconnectButton} onPress={() => confirmDisconnect(item)}>
+                <Text style={styles.disconnectText}>Disconnect</Text>
+              </TouchableOpacity>
+            </View>
+          )}
         />
       )}
     </View>
@@ -130,67 +154,84 @@ export default function ConnectionsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#F5F7FA",
+    backgroundColor: "#f5f7fa",
     padding: 20,
   },
+
+  center: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
   title: {
     fontSize: 30,
     fontWeight: "700",
     marginTop: 20,
-  },
-  subtitle: {
-    color: "#777",
-    marginTop: 5,
     marginBottom: 25,
   },
-  loader: {
-    marginTop: 50,
+
+  list: {
+    paddingBottom: 20,
   },
+
   card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 18,
-    padding: 18,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 20,
     marginBottom: 15,
-    flexDirection: "row",
-    alignItems: "center",
   },
-  avatar: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
-    backgroundColor: "#EEF2FF",
-    alignItems: "center",
-    justifyContent: "center",
+
+  device: {
+    fontSize: 13,
+    color: "#777",
+    marginBottom: 6,
   },
-  avatarText: {
-    fontSize: 23,
-  },
-  content: {
-    flex: 1,
-    marginLeft: 14,
-  },
-  name: {
-    fontSize: 18,
-    fontWeight: "700",
-  },
-  status: {
-    color: "#16A34A",
-    marginTop: 4,
+
+  deviceId: {
+    fontSize: 15,
     fontWeight: "600",
   },
-  empty: {
+
+  deviceDetail: { color: "#6b7280", marginTop: 5 },
+  disconnectButton: { alignSelf: "flex-start", marginTop: 16, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, backgroundColor: "#fef2f2" },
+  disconnectText: { color: "#b91c1c", fontWeight: "700" },
+
+  statusContainer: {
+    flexDirection: "row",
     alignItems: "center",
-    marginTop: 80,
-    paddingHorizontal: 20,
+    marginTop: 15,
   },
+
+  statusDot: {
+    width: 9,
+    height: 9,
+    borderRadius: 5,
+    backgroundColor: "#22c55e",
+    marginRight: 8,
+  },
+
+  status: {
+    color: "#22c55e",
+    fontWeight: "600",
+  },
+
+  empty: {
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    padding: 25,
+    alignItems: "center",
+  },
+
   emptyTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: "700",
+    marginBottom: 8,
   },
+
   emptyText: {
-    color: "#777",
     textAlign: "center",
-    marginTop: 8,
-    lineHeight: 22,
+    color: "#777",
+    lineHeight: 21,
   },
 });

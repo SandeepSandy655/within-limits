@@ -1,8 +1,5 @@
 import * as Location from "expo-location";
-import { io, Socket } from "socket.io-client";
-
-// CHANGE THIS to your computer's local IP address
-const SERVER_URL = "http://192.168.1.11:5000";
+import { getSocket, connectSocket } from "./socketService";
 
 export interface DeviceLocation {
   deviceId: string;
@@ -13,13 +10,32 @@ export interface DeviceLocation {
   heading: number | null;
 }
 
-let socket: Socket | null = null;
 let locationSubscription: Location.LocationSubscription | null = null;
+let lastSentAt = 0;
+let lastSentCoordinates: { latitude: number; longitude: number } | null = null;
+
+function distanceMeters(
+  first: { latitude: number; longitude: number },
+  second: { latitude: number; longitude: number }
+): number {
+  const radians = (degrees: number) => (degrees * Math.PI) / 180;
+  const latitudeDelta = radians(second.latitude - first.latitude);
+  const longitudeDelta = radians(second.longitude - first.longitude);
+  const haversine =
+    Math.sin(latitudeDelta / 2) ** 2 +
+    Math.cos(radians(first.latitude)) *
+      Math.cos(radians(second.latitude)) *
+      Math.sin(longitudeDelta / 2) ** 2;
+  return 6_371_000 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+}
 
 export async function startLiveLocation(
   deviceId: string
 ): Promise<void> {
   try {
+    if (locationSubscription) return;
+    lastSentAt = 0;
+    lastSentCoordinates = null;
     console.log("=================================");
     console.log("STARTING LIVE LOCATION");
     console.log("Device ID:", deviceId);
@@ -43,33 +59,7 @@ export async function startLiveLocation(
     // 2. Connect to Node.js backend
     // --------------------------------------------------
 
-    socket = io(SERVER_URL, {
-      transports: ["polling", "websocket"],
-    });
-
-    socket.on("connect", () => {
-      console.log("Connected to backend");
-      console.log("Socket ID:", socket?.id);
-
-      // Tell backend this device is online
-      socket?.emit("device-online", {
-        deviceId,
-      });
-    });
-
-    socket.on("connect_error", (error) => {
-      console.log(
-        "Socket connection error:",
-        error.message
-      );
-    });
-
-    socket.on("disconnect", (reason) => {
-      console.log(
-        "Disconnected from backend:",
-        reason
-      );
-    });
+    connectSocket(deviceId);
 
     // --------------------------------------------------
     // 3. Start watching real GPS location
@@ -78,13 +68,9 @@ export async function startLiveLocation(
     locationSubscription =
       await Location.watchPositionAsync(
         {
-          accuracy: Location.Accuracy.High,
-
-          // Try to get a location update every 5 seconds
-          timeInterval: 5000,
-
-          // Update when device moves at least 5 meters
-          distanceInterval: 5,
+          accuracy: Location.Accuracy.Balanced,
+          timeInterval: 10_000,
+          distanceInterval: 10,
         },
 
         (location) => {
@@ -96,15 +82,19 @@ export async function startLiveLocation(
             heading,
           } = location.coords;
 
-          console.log("");
-          console.log("===== REAL GPS LOCATION =====");
-          console.log("Device:", deviceId);
-          console.log("Latitude:", latitude);
-          console.log("Longitude:", longitude);
-          console.log("Accuracy:", accuracy);
-          console.log("Speed:", speed);
-          console.log("Heading:", heading);
-          console.log("=============================");
+          const now = Date.now();
+          const currentCoordinates = { latitude, longitude };
+          const movedMeters = lastSentCoordinates
+            ? distanceMeters(lastSentCoordinates, currentCoordinates)
+            : Number.POSITIVE_INFINITY;
+          const elapsedMs = now - lastSentAt;
+
+          // Limit routine updates to one every 15 seconds. Send sooner after
+          // meaningful movement, but never more often than every 5 seconds.
+          if (
+            lastSentAt > 0 &&
+            (elapsedMs < 5_000 || (elapsedMs < 15_000 && movedMeters < 20))
+          ) return;
 
           const locationData: DeviceLocation = {
             deviceId,
@@ -116,10 +106,12 @@ export async function startLiveLocation(
           };
 
           // Send GPS location to backend
-          socket?.emit(
+          getSocket()?.emit(
             "device-location",
             locationData
           );
+          lastSentAt = now;
+          lastSentCoordinates = currentCoordinates;
         }
       );
 
@@ -133,19 +125,11 @@ export async function startLiveLocation(
 }
 
 export function stopLiveLocation(): void {
-  console.log("Stopping live location...");
-
-  // Stop GPS watcher
   if (locationSubscription) {
     locationSubscription.remove();
     locationSubscription = null;
   }
 
-  // Disconnect Socket.IO
-  if (socket) {
-    socket.disconnect();
-    socket = null;
-  }
-
-  console.log("Live location stopped");
+  lastSentAt = 0;
+  lastSentCoordinates = null;
 }

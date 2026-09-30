@@ -1,145 +1,103 @@
 const deviceService = require("../services/deviceService");
 
-async function registerDevice(req, res) {
-  try {
-    const device = await deviceService.registerDevice(
-      req.body
-    );
-
-    res.status(201).json({
-      success: true,
-      message: "Device registered successfully",
-      device
-    });
-
-  } catch (error) {
-    console.error(
-      "Register device error:",
-      error
-    );
-
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
+function sendError(res, error, status = 500) {
+  console.error(`[devices] ${error.message}`);
+  return res.status(status).json({
+    success: false,
+    message: status >= 500 ? "Device request failed" : error.message,
+  });
 }
 
+async function registerDevice(req, res) {
+  try {
+    const device = await deviceService.registerDevice(req.body);
+    return res.status(201).json({
+      success: true,
+      message: "Device registered successfully",
+      device,
+    });
+  } catch (error) {
+    return sendError(res, error, error.code === 11000 ? 409 : 400);
+  }
+}
 
 async function getDevice(req, res) {
   try {
-    const { deviceId } = req.params;
-
-    const device =
-      await deviceService.getDevice(deviceId);
-
+    const device = await deviceService.getDevice(req.params.deviceId);
     if (!device) {
-      return res.status(404).json({
-        success: false,
-        message: "Device not found"
-      });
+      return res.status(404).json({ success: false, message: "Device not found" });
     }
-
-    res.status(200).json({
-      success: true,
-      device
-    });
-
+    return res.json({ success: true, device });
   } catch (error) {
-    console.error(
-      "Get device error:",
-      error
-    );
-
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return sendError(res, error);
   }
 }
 
-
-async function getAllDevices(req, res) {
+async function getAllDevices(_req, res) {
   try {
-    const devices =
-      await deviceService.getAllDevices();
-
-    res.status(200).json({
-      success: true,
-      count: devices.length,
-      devices
-    });
-
+    const devices = await deviceService.getAllDevices();
+    return res.json({ success: true, count: devices.length, devices });
   } catch (error) {
-    console.error(
-      "Get devices error:",
-      error
-    );
-
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
+    return sendError(res, error);
   }
 }
-
 
 async function getNearbyDevices(req, res) {
+  const { latitude, longitude, radius, deviceId } = req.query;
+  const parsedLatitude = Number(latitude);
+  const parsedLongitude = Number(longitude);
+  const parsedRadius = radius === undefined ? undefined : Number(radius);
+
+  if (!Number.isFinite(parsedLatitude) || !Number.isFinite(parsedLongitude)) {
+    return res.status(400).json({
+      success: false,
+      message: "Valid latitude and longitude are required",
+    });
+  }
+  if (parsedLatitude < -90 || parsedLatitude > 90 || parsedLongitude < -180 || parsedLongitude > 180) {
+    return res.status(400).json({ success: false, message: "Coordinates are out of range" });
+  }
+  if (parsedRadius !== undefined && !Number.isFinite(parsedRadius)) {
+    return res.status(400).json({ success: false, message: "radius must be a number" });
+  }
+  if (parsedRadius !== undefined && parsedRadius <= 0) {
+    return res.status(400).json({ success: false, message: "radius must be positive" });
+  }
+  if (!deviceId) {
+    return res.status(400).json({ success: false, message: "deviceId is required" });
+  }
+
   try {
-    const latitude =
-      Number(req.query.latitude);
-
-    const longitude =
-      Number(req.query.longitude);
-
-    const radius =
-      Number(req.query.radius) || 5000;
-
-    const currentDeviceId =
-      req.query.deviceId || null;
-
-    if (
-      Number.isNaN(latitude) ||
-      Number.isNaN(longitude)
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Valid latitude and longitude are required",
-      });
-    }
-
-    const devices =
-      await deviceService.getNearbyDevices(
-        latitude,
-        longitude,
-        radius,
-        currentDeviceId
-      );
-
-    res.status(200).json({
+    const devices = await deviceService.getNearbyDevices(
+      parsedLatitude,
+      parsedLongitude,
+      parsedRadius,
+      deviceId
+    );
+    return res.json({
       success: true,
       count: devices.length,
-      radius,
+      radius: parsedRadius ?? 5_000,
       devices,
     });
   } catch (error) {
-    console.error(
-      "Get nearby devices error:",
-      error
-    );
-
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    return sendError(res, error);
   }
 }
 
+async function getConnectedDevices(req, res) {
+  try {
+    const devices = await deviceService.getConnectedDevices(req.params.deviceId);
+    return res.json({ success: true, devices });
+  } catch (error) {
+    return sendError(res, error);
+  }
+}
 
 module.exports = {
   registerDevice,
   getDevice,
   getAllDevices,
-  getNearbyDevices
+  getNearbyDevices,
+  getConnectedDevices,
 };

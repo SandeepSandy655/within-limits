@@ -1,4 +1,5 @@
 import { useState } from "react";
+
 import {
   Alert,
   KeyboardAvoidingView,
@@ -9,9 +10,11 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+
 import { useRouter } from "expo-router";
 
 import { getDeviceProfile } from "../services/deviceStorage";
+
 import {
   sendConnectionRequestByCode,
 } from "../services/connectionService";
@@ -19,24 +22,30 @@ import {
 export default function ConnectScreen() {
   const router = useRouter();
 
-  const [code, setCode] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [code, setCode] =
+    useState("");
+
+  const [loading, setLoading] =
+    useState(false);
 
   async function connectDevice() {
-    const cleanCode = code.replace(/\D/g, "");
+    const cleanCode =
+      code.replace(/\D/g, "");
 
     if (cleanCode.length !== 8) {
       Alert.alert(
         "Invalid Code",
         "Enter the 8-digit connection code."
       );
+
       return;
     }
 
     try {
       setLoading(true);
 
-      const device = await getDeviceProfile();
+      const device =
+        await getDeviceProfile();
 
       await sendConnectionRequestByCode(
         device.deviceId,
@@ -45,11 +54,13 @@ export default function ConnectScreen() {
 
       Alert.alert(
         "Request Sent",
-        "Connection request sent successfully.",
+        "The connection request has been sent.",
         [
           {
             text: "OK",
-            onPress: () => router.back(),
+            onPress: () => {
+              router.back();
+            },
           },
         ]
       );
@@ -80,19 +91,23 @@ export default function ConnectScreen() {
         </Text>
 
         <Text style={styles.subtitle}>
-          Enter the connection code of the device
-          you want to pair with.
+          Enter the 8-digit connection code
+          of the device you want to pair with.
         </Text>
 
         <TextInput
           style={styles.input}
           value={code}
-          onChangeText={(value) =>
-            setCode(
-              value.replace(/\D/g, "").slice(0, 8)
-            )
-          }
-          placeholder="00000000"
+          onChangeText={(value) => {
+            const numbers =
+              value
+                .replace(/\D/g, "")
+                .slice(0, 8);
+
+            setCode(numbers);
+          }}
+          placeholder="48217356"
+          placeholderTextColor="#999"
           keyboardType="number-pad"
           maxLength={8}
           autoFocus
@@ -101,7 +116,8 @@ export default function ConnectScreen() {
         <TouchableOpacity
           style={[
             styles.button,
-            loading && styles.disabled,
+            loading &&
+              styles.disabled,
           ]}
           onPress={connectDevice}
           disabled={loading}
@@ -114,7 +130,10 @@ export default function ConnectScreen() {
         </TouchableOpacity>
 
         <TouchableOpacity
-          onPress={() => router.back()}
+          onPress={() =>
+            router.back()
+          }
+          disabled={loading}
         >
           <Text style={styles.cancel}>
             Cancel
@@ -128,7 +147,7 @@ export default function ConnectScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#fff",
+    backgroundColor: "#f5f7fa",
   },
 
   content: {
@@ -147,14 +166,16 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#666",
     marginBottom: 30,
+    lineHeight: 23,
   },
 
   input: {
     borderWidth: 1,
-    borderColor: "#ccc",
+    borderColor: "#d1d5db",
+    backgroundColor: "#fff",
     borderRadius: 14,
     paddingHorizontal: 20,
-    height: 60,
+    height: 65,
     fontSize: 26,
     letterSpacing: 5,
     textAlign: "center",
@@ -162,7 +183,7 @@ const styles = StyleSheet.create({
   },
 
   button: {
-    backgroundColor: "#111",
+    backgroundColor: "#111827",
     height: 55,
     borderRadius: 14,
     alignItems: "center",
@@ -183,5 +204,6 @@ const styles = StyleSheet.create({
     textAlign: "center",
     marginTop: 20,
     color: "#666",
+    fontSize: 15,
   },
 });

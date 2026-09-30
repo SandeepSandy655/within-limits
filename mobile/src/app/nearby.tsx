@@ -11,27 +11,23 @@ import {
 } from "react-native";
 
 import * as Location from "expo-location";
+import { useRouter } from "expo-router";
 
 import {
   Device,
   getNearbyDevices,
 } from "../services/connectionService";
 
-import {
-  connectSocket,
-} from "../services/socketService";
-
-const DEVICE_ID = "FNT-A123";
+import { getDeviceProfile } from "../services/deviceStorage";
 
 export default function NearbyScreen() {
+  const router = useRouter();
   const [devices, setDevices] =
     useState<Device[]>([]);
 
   const [loading, setLoading] =
     useState(true);
 
-  const [sendingTo, setSendingTo] =
-    useState<string | null>(null);
 
   useEffect(() => {
     loadNearbyDevices();
@@ -97,19 +93,19 @@ export default function NearbyScreen() {
       // SEARCH WITHIN 5 KM
       // ------------------------------------
 
+      const profile = await getDeviceProfile();
       const nearby =
         await getNearbyDevices(
           latitude,
           longitude,
-          5000
+          5000,
+          profile.deviceId
         );
 
       // Don't show our own device
       const otherDevices =
         nearby.filter(
-          (device) =>
-            device.deviceId !==
-            DEVICE_ID
+          (device) => device.deviceId !== profile.deviceId
         );
 
       setDevices(
@@ -133,82 +129,6 @@ export default function NearbyScreen() {
   }
 
   // ========================================
-  // SEND CONNECTION REQUEST
-  // ========================================
-
-  function connectToDevice(
-    receiverId: string
-  ) {
-    try {
-      setSendingTo(receiverId);
-
-      const socket =
-        connectSocket(
-          DEVICE_ID
-        );
-
-      // Listen BEFORE sending
-      socket.once(
-        "connection-request-sent",
-        (data) => {
-          console.log(
-            "Connection request sent:",
-            data
-          );
-
-          Alert.alert(
-            "Request Sent",
-            `Connection request sent to ${receiverId}.`
-          );
-
-          setSendingTo(null);
-        }
-      );
-
-      socket.once(
-        "connection-error",
-        (data) => {
-          console.error(
-            "Connection error:",
-            data
-          );
-
-          Alert.alert(
-            "Request Failed",
-            data.message ||
-              "Unable to send connection request."
-          );
-
-          setSendingTo(null);
-        }
-      );
-
-      // Send request through Socket.IO
-      socket.emit(
-        "send-connection-request",
-        {
-          requesterId:
-            DEVICE_ID,
-
-          receiverId,
-        }
-      );
-    } catch (error) {
-      console.error(
-        "Send request error:",
-        error
-      );
-
-      setSendingTo(null);
-
-      Alert.alert(
-        "Error",
-        "Unable to send connection request."
-      );
-    }
-  }
-
-  // ========================================
   // DEVICE CARD
   // ========================================
 
@@ -217,9 +137,6 @@ export default function NearbyScreen() {
   }: {
     item: Device;
   }) {
-    const isSending =
-      sendingTo === item.deviceId;
-
     return (
       <View style={styles.card}>
         {/* DEVICE INFORMATION */}
@@ -247,30 +164,15 @@ export default function NearbyScreen() {
           </View>
         </View>
 
-        {/* CONNECT BUTTON */}
+        {/* OPEN SHARED MAP */}
 
         <TouchableOpacity
           style={[
             styles.connectButton,
-            isSending &&
-              styles.disabledButton,
           ]}
-          onPress={() =>
-            connectToDevice(
-              item.deviceId
-            )
-          }
-          disabled={isSending}
+          onPress={() => router.push("/locations")}
         >
-          {isSending ? (
-            <ActivityIndicator
-              color="#ffffff"
-            />
-          ) : (
-            <Text style={styles.buttonText}>
-              CONNECT
-            </Text>
-          )}
+          <Text style={styles.buttonText}>VIEW MAP</Text>
         </TouchableOpacity>
       </View>
     );
@@ -281,11 +183,11 @@ export default function NearbyScreen() {
       {/* HEADER */}
 
       <Text style={styles.title}>
-        Nearby Devices
+        Nearby Connections
       </Text>
 
       <Text style={styles.subtitle}>
-        Devices within 5 km
+        Connected devices within 5 km
       </Text>
 
       {/* LOADING */}
@@ -309,12 +211,11 @@ export default function NearbyScreen() {
           </Text>
 
           <Text style={styles.emptyTitle}>
-            No nearby devices
+            No connected devices nearby
           </Text>
 
           <Text style={styles.emptyText}>
-            No other online devices were
-            found within 5 km.
+            No connected device with a recent location was found within 5 km.
           </Text>
 
           <TouchableOpacity

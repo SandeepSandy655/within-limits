@@ -5,32 +5,43 @@ const {
   sendConnectionRequestByCode,
   acceptConnection,
   rejectConnection,
+  disconnectDevice,
   getDeviceConnections,
-  getPendingRequests
+  getPendingRequests,
 } = require("../controllers/connectionController");
 
 const router = express.Router();
 
-// Send connection request
-router.post("/request", sendConnectionRequest);
+router.post(
+  "/request",
+  sendConnectionRequest
+);
 
 router.post(
   "/request-by-code",
   sendConnectionRequestByCode
 );
 
+router.post(
+  "/accept",
+  acceptConnection
+);
 
-// Accept connection request
-router.post("/accept", acceptConnection);
+router.post(
+  "/reject",
+  rejectConnection
+);
 
-// Reject connection request
-router.post("/reject", rejectConnection);
+router.post("/disconnect", disconnectDevice);
 
-// Get all connections for a device
-router.get("/device/:deviceId", getDeviceConnections);
+router.get(
+  "/device/:deviceId",
+  getDeviceConnections
+);
 
-// Get pending requests received by a device
-router.get("/pending/:deviceId", getPendingRequests);
-
+router.get(
+  "/pending/:deviceId",
+  getPendingRequests
+);
 
 module.exports = router;

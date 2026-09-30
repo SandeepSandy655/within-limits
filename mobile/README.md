@@ -16,6 +16,12 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npx expo start
    ```
 
+## OpenStreetMap setup
+
+The shared locations screen displays OpenStreetMap tiles in a Leaflet map inside Expo's WebView. No map API token is needed.
+
+The map shows OpenStreetMap attribution and identifies the app when requesting tiles. The public OSM tile server is best-effort and intended for reasonable interactive use; follow its [tile usage policy](https://operations.osmfoundation.org/policies/tiles/). Expo's WebView is included in Expo Go. The backend continues to provide paired device coordinates; the mobile app loads map tiles directly from OpenStreetMap.
+
 In the output, you'll find options to open the app in a
 
 - [development build](https://docs.expo.dev/develop/development-builds/introduction/)

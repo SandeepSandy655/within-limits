@@ -6,62 +6,68 @@ const deviceSchema = new mongoose.Schema(
       type: String,
       required: true,
       unique: true,
-      index: true
     },
 
-    // User-facing 8-digit code used to pair devices
+    // User-facing code used to connect devices
     connectionCode: {
-      type: String
+      type: String,
     },
 
     ownerId: {
       type: String,
       default: null,
-      index: true
+      index: true,
     },
 
     deviceName: {
       type: String,
-      default: "Unknown Device"
+      default: "Unknown Device",
     },
 
     deviceType: {
       type: String,
-      default: "mobile"
+      default: "mobile",
     },
 
     platform: {
       type: String,
-      default: "unknown"
+      default: "unknown",
     },
 
     status: {
       type: String,
       enum: ["online", "offline"],
       default: "offline",
-      index: true
+      index: true,
     },
 
+    // Optional GPS information
     location: {
       type: mongoose.Schema.Types.Mixed,
-      default: undefined
+      default: undefined,
     },
 
     lastSeen: {
       type: Date,
-      default: null
-    }
+      default: null,
+    },
   },
   {
-    timestamps: true
+    timestamps: true,
   }
 );
 
+// Unique only when a code exists.
+// This keeps old devices without a code from breaking.
 deviceSchema.index(
   { connectionCode: 1 },
-  { unique: true, sparse: true }
+  {
+    unique: true,
+    sparse: true,
+  }
 );
 
+// GPS index
 deviceSchema.index(
   { location: "2dsphere" },
   { sparse: true }

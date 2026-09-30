@@ -4,7 +4,8 @@ const {
   registerDevice,
   getDevice,
   getAllDevices,
-  getNearbyDevices
+  getNearbyDevices,
+  getConnectedDevices,
 } = require("../controllers/deviceController");
 
 const router = express.Router();
@@ -12,6 +13,7 @@ const router = express.Router();
 router.post("/register", registerDevice);
 
 router.get("/nearby", getNearbyDevices);
+router.get("/connected/:deviceId", getConnectedDevices);
 
 router.get("/", getAllDevices);
 

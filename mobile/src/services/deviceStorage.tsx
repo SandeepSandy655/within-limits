@@ -1,4 +1,6 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Crypto from "expo-crypto";
+import { Platform } from "react-native";
 
 const DEVICE_KEY = "@sand_device";
 
@@ -7,47 +9,20 @@ export interface DeviceProfile {
   deviceName: string;
   deviceType: string;
   platform: string;
+
+  // Received from backend
   connectionCode?: string;
 }
 
-const DEVICE_NAMES = [
-  "SAND Falcon",
-  "SAND Nova",
-  "SAND Orbit",
-  "SAND Pulse",
-  "SAND Titan",
-  "SAND Spark",
-  "SAND Echo",
-  "SAND Atlas",
-  "SAND Vector",
-  "SAND Zenith",
-  "SAND Comet",
-  "SAND Shadow",
-  "SAND Storm",
-  "SAND Phoenix",
-  "SAND Voyager",
-];
-
 function generateDeviceId(): string {
-  const randomPart = Math.random()
-    .toString(36)
-    .substring(2, 8)
-    .toUpperCase();
-
-  return `FNT-${randomPart}`;
-}
-
-function generateDeviceName(): string {
-  const randomIndex = Math.floor(
-    Math.random() * DEVICE_NAMES.length
-  );
-
-  return DEVICE_NAMES[randomIndex];
+  return `DEV-${Crypto.randomUUID()}`;
 }
 
 export async function getDeviceProfile(): Promise<DeviceProfile> {
   const stored =
-    await AsyncStorage.getItem(DEVICE_KEY);
+    await AsyncStorage.getItem(
+      DEVICE_KEY
+    );
 
   if (stored) {
     return JSON.parse(stored);
@@ -55,9 +30,9 @@ export async function getDeviceProfile(): Promise<DeviceProfile> {
 
   const profile: DeviceProfile = {
     deviceId: generateDeviceId(),
-    deviceName: generateDeviceName(),
+    deviceName: Platform.OS === "ios" ? "My iPhone" : Platform.OS === "android" ? "My Android device" : "My device",
     deviceType: "mobile",
-    platform: "android",
+    platform: Platform.OS,
   };
 
   await AsyncStorage.setItem(
@@ -75,23 +50,31 @@ export async function getDeviceProfile(): Promise<DeviceProfile> {
 
 export async function saveDeviceProfile(
   profile: DeviceProfile
-): Promise<DeviceProfile> {
+): Promise<void> {
   await AsyncStorage.setItem(
     DEVICE_KEY,
     JSON.stringify(profile)
   );
-
-  return profile;
 }
 
 export function formatConnectionCode(
-  code?: string | null
+  code?: string
 ): string {
-  const digits = String(code || "").replace(/\D/g, "");
-
-  if (digits.length !== 8) {
-    return digits || "--------";
+  if (!code) {
+    return "--------";
   }
 
-  return `${digits.slice(0, 4)} ${digits.slice(4)}`;
+  const cleanCode = code.replace(
+    /\D/g,
+    ""
+  );
+
+  if (cleanCode.length !== 8) {
+    return cleanCode;
+  }
+
+  return `${cleanCode.slice(
+    0,
+    4
+  )} ${cleanCode.slice(4)}`;
 }

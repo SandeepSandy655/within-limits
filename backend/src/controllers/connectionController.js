@@ -1,9 +1,11 @@
 const connectionService = require("../services/connectionService");
+const deviceService = require("../services/deviceService");
 const {
   notifyConnectionRequest,
   notifyConnectionAccepted,
   notifyConnectionRejected,
   notifyConnectionDisconnected,
+  notifyDeviceRing,
 } = require("../sockets/connectedDevices");
 
 // =====================================================
@@ -161,6 +163,32 @@ async function disconnectDevice(req, res) {
   }
 }
 
+async function ringDevice(req, res) {
+  try {
+    const { deviceId, targetDeviceId } = req.body;
+    if (!await connectionService.areDevicesPaired(deviceId, targetDeviceId)) {
+      return res.status(403).json({ success: false, message: "Only connected devices can send a buzzer." });
+    }
+    const [sender, target] = await Promise.all([
+      deviceService.getDevice(deviceId),
+      deviceService.getDevice(targetDeviceId),
+    ]);
+    if (!sender || !target) {
+      return res.status(404).json({ success: false, message: "Device not found." });
+    }
+    const delivered = notifyDeviceRing(targetDeviceId, {
+      fromDeviceId: sender.deviceId,
+      fromDeviceName: sender.deviceName,
+    });
+    if (!delivered) {
+      return res.status(409).json({ success: false, message: "That device is offline. The buzzer requires its app to be connected." });
+    }
+    return res.json({ success: true, message: "Buzzer sent." });
+  } catch (error) {
+    return res.status(400).json({ success: false, message: error.message });
+  }
+}
+
 // =====================================================
 // GET CONNECTIONS
 // =====================================================
@@ -229,6 +257,7 @@ module.exports = {
   acceptConnection,
   rejectConnection,
   disconnectDevice,
+  ringDevice,
   getDeviceConnections,
   getPendingRequests,
 };

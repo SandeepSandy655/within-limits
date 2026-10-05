@@ -12,6 +12,7 @@ import {
 } from "react-native";
 
 import { useRouter } from "expo-router";
+import BackButton from "../components/back-button";
 
 import { getDeviceProfile } from "../services/deviceStorage";
 
@@ -85,14 +86,14 @@ export default function ConnectScreen() {
           : undefined
       }
     >
+      <BackButton style={styles.backButton} />
       <View style={styles.content}>
         <Text style={styles.title}>
-          Connect Device
+          Add a device
         </Text>
 
         <Text style={styles.subtitle}>
-          Enter the 8-digit connection code
-          of the device you want to pair with.
+          Enter the pairing code from the device you want to add. They’ll need to accept your request before locations are shared.
         </Text>
 
         <TextInput
@@ -106,8 +107,8 @@ export default function ConnectScreen() {
 
             setCode(numbers);
           }}
-          placeholder="48217356"
-          placeholderTextColor="#999"
+          placeholder="0000 0000"
+          placeholderTextColor="#a6ada7"
           keyboardType="number-pad"
           maxLength={8}
           autoFocus
@@ -147,43 +148,55 @@ export default function ConnectScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f5f7fa",
+    backgroundColor: "#f4f5ef",
   },
 
   content: {
     flex: 1,
     padding: 24,
     justifyContent: "center",
+    width: "100%",
+    maxWidth: 560,
+    alignSelf: "center",
+  },
+  backButton: {
+    position: "absolute",
+    top: 8,
+    left: 16,
+    zIndex: 1,
   },
 
   title: {
-    fontSize: 30,
-    fontWeight: "700",
+    fontSize: 34,
+    color: "#17312e",
+    fontWeight: "800",
+    letterSpacing: -0.6,
     marginBottom: 10,
   },
 
   subtitle: {
     fontSize: 16,
-    color: "#666",
+    color: "#687774",
     marginBottom: 30,
     lineHeight: 23,
   },
 
   input: {
     borderWidth: 1,
-    borderColor: "#d1d5db",
+    borderColor: "#d9dfd5",
     backgroundColor: "#fff",
     borderRadius: 14,
     paddingHorizontal: 20,
     height: 65,
-    fontSize: 26,
-    letterSpacing: 5,
+    fontSize: 27,
+    letterSpacing: 4,
     textAlign: "center",
     marginBottom: 20,
+    color: "#193532",
   },
 
   button: {
-    backgroundColor: "#111827",
+    backgroundColor: "#dfff9b",
     height: 55,
     borderRadius: 14,
     alignItems: "center",
@@ -195,7 +208,7 @@ const styles = StyleSheet.create({
   },
 
   buttonText: {
-    color: "#fff",
+    color: "#193532",
     fontSize: 16,
     fontWeight: "600",
   },
@@ -203,7 +216,7 @@ const styles = StyleSheet.create({
   cancel: {
     textAlign: "center",
     marginTop: 20,
-    color: "#666",
+    color: "#687774",
     fontSize: 15,
   },
 });

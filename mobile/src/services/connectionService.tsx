@@ -230,6 +230,21 @@ export async function disconnectDevice(
   }
 }
 
+export async function ringDevice(
+  deviceId: string,
+  targetDeviceId: string
+): Promise<void> {
+  const response = await fetch(`${SERVER_URL}/api/connections/ring`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ deviceId, targetDeviceId }),
+  });
+  const data = await response.json();
+  if (!response.ok || !data.success) {
+    throw new Error(data.message || "Could not send the buzzer");
+  }
+}
+
 export async function getNearbyDevices(
   latitude: number,
   longitude: number,

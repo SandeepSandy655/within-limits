@@ -11,6 +11,8 @@ import {
 } from "react-native";
 
 import { useFocusEffect } from "expo-router";
+import * as Location from "expo-location";
+import BackButton from "../components/back-button";
 
 import { getDeviceProfile } from "../services/deviceStorage";
 
@@ -18,8 +20,24 @@ import {
   getMyConnections,
   getConnectedDevices,
   disconnectDevice,
+  ringDevice,
   Connection,
 } from "../services/connectionService";
+
+const MAX_LINKED_DEVICES = 4;
+
+function distanceBetweenMeters(lat1: number, lon1: number, lat2: number, lon2: number) {
+  const radians = (degrees: number) => (degrees * Math.PI) / 180;
+  const dLat = radians(lat2 - lat1);
+  const dLon = radians(lon2 - lon1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(radians(lat1)) * Math.cos(radians(lat2)) * Math.sin(dLon / 2) ** 2;
+  return 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatDistance(meters: number) {
+  if (meters < 1000) return `About ${Math.max(1, Math.round(meters))} m away`;
+  return `About ${(meters / 1000).toFixed(1)} km away`;
+}
 
 export default function ConnectionsScreen() {
   const [connections, setConnections] =
@@ -28,11 +46,13 @@ export default function ConnectionsScreen() {
   const [loading, setLoading] =
     useState(true);
   const [deviceId, setDeviceId] = useState("");
-  const [deviceNames, setDeviceNames] = useState<Record<string, { name: string; status: string }>>({});
+  const [deviceNames, setDeviceNames] = useState<Record<string, { name: string; status: string; location?: { coordinates?: [number, number] } }>>({});
+  const [ringingId, setRingingId] = useState<string | null>(null);
+  const [myLocation, setMyLocation] = useState<{ latitude: number; longitude: number } | null>(null);
 
-  async function loadConnections() {
+  async function loadConnections(showLoading = true) {
     try {
-      setLoading(true);
+      if (showLoading) setLoading(true);
 
       const device =
         await getDeviceProfile();
@@ -42,18 +62,31 @@ export default function ConnectionsScreen() {
           device.deviceId
         );
       const peers = await getConnectedDevices(device.deviceId);
+      let currentLocation: { latitude: number; longitude: number } | null = null;
+      const permission = await Location.getForegroundPermissionsAsync();
+      if (permission.granted) {
+        try {
+          const position = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+          currentLocation = { latitude: position.coords.latitude, longitude: position.coords.longitude };
+        } catch {
+          // Keep the connection list usable when location services are off or unavailable.
+        }
+      }
+      setMyLocation(currentLocation);
       setDeviceId(device.deviceId);
-      setDeviceNames(Object.fromEntries(peers.map((peer) => [peer.deviceId, { name: peer.deviceName, status: peer.status }])));
+      setDeviceNames(Object.fromEntries(peers.map((peer) => [peer.deviceId, { name: peer.deviceName, status: peer.status, location: peer.location }])));
       setConnections(result);
     } catch (error) {
-      Alert.alert(
-        "Error",
-        error instanceof Error
-          ? error.message
-          : "Failed to load connections"
-      );
+      if (showLoading) {
+        Alert.alert(
+          "Error",
+          error instanceof Error
+            ? error.message
+            : "Failed to load connections"
+        );
+      }
     } finally {
-      setLoading(false);
+      if (showLoading) setLoading(false);
     }
   }
 
@@ -73,9 +106,26 @@ export default function ConnectionsScreen() {
     ]);
   }
 
+  async function ringConnectedDevice(connection: Connection) {
+    const peerId = connection.requesterId === deviceId ? connection.receiverId : connection.requesterId;
+    setRingingId(peerId);
+    try {
+      await ringDevice(deviceId, peerId);
+      Alert.alert("Buzzer sent", `${deviceNames[peerId]?.name || "The device"} should vibrate if its app is online.`);
+    } catch (error) {
+      Alert.alert("Could not reach device", error instanceof Error ? error.message : "Make sure the device is online.");
+    } finally {
+      setRingingId(null);
+    }
+  }
+
   useFocusEffect(
     useCallback(() => {
-      loadConnections();
+      void loadConnections();
+      const refreshInterval = setInterval(() => {
+        void loadConnections(false);
+      }, 15_000);
+      return () => clearInterval(refreshInterval);
     }, [])
   );
 
@@ -89,9 +139,21 @@ export default function ConnectionsScreen() {
 
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>
-        My Connections
-      </Text>
+      <BackButton />
+      <Text style={styles.title}>Devices</Text>
+      <Text style={styles.subtitle}>See how far away each device is, send a buzz or remove a connection.</Text>
+      {(() => {
+        const hostLinks = connections.filter((item) => item.receiverId === deviceId).length;
+        const linkedTo = connections.find((item) => item.requesterId === deviceId);
+        return (
+          <View style={styles.roleCard}>
+            <Text style={styles.roleTitle}>{linkedTo ? "LINKED DEVICE" : "HOST DEVICE"}</Text>
+            <Text style={styles.roleText}>{linkedTo
+              ? `Linked to ${deviceNames[linkedTo.receiverId]?.name || linkedTo.receiverName || "your host"}. This device can’t host or join another circle.`
+              : `${hostLinks} of ${MAX_LINKED_DEVICES} linked devices`}</Text>
+          </View>
+        );
+      })()}
 
       {connections.length === 0 ? (
         <View style={styles.empty}>
@@ -126,6 +188,14 @@ export default function ConnectionsScreen() {
               <Text style={styles.deviceDetail}>
                 {deviceNames[item.requesterId === deviceId ? item.receiverId : item.requesterId]?.status === "online" ? "Online" : "Offline"}
               </Text>
+              <Text style={styles.distance}>
+                {(() => {
+                  const peer = deviceNames[item.requesterId === deviceId ? item.receiverId : item.requesterId];
+                  const coordinates = peer?.location?.coordinates;
+                  if (!myLocation || !coordinates || coordinates.length < 2) return "Distance unavailable — waiting for location";
+                  return formatDistance(distanceBetweenMeters(myLocation.latitude, myLocation.longitude, coordinates[1], coordinates[0]));
+                })()}
+              </Text>
 
               <View
                 style={styles.statusContainer}
@@ -143,6 +213,13 @@ export default function ConnectionsScreen() {
               <TouchableOpacity style={styles.disconnectButton} onPress={() => confirmDisconnect(item)}>
                 <Text style={styles.disconnectText}>Disconnect</Text>
               </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.ringButton}
+                onPress={() => ringConnectedDevice(item)}
+                disabled={ringingId !== null || deviceNames[item.requesterId === deviceId ? item.receiverId : item.requesterId]?.status !== "online"}
+              >
+                <Text style={styles.ringText}>{ringingId === (item.requesterId === deviceId ? item.receiverId : item.requesterId) ? "Sending…" : "Buzz device"}</Text>
+              </TouchableOpacity>
             </View>
           )}
         />
@@ -154,7 +231,7 @@ export default function ConnectionsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f5f7fa",
+    backgroundColor: "#f4f5ef",
     padding: 20,
   },
 
@@ -165,11 +242,13 @@ const styles = StyleSheet.create({
   },
 
   title: {
-    fontSize: 30,
-    fontWeight: "700",
-    marginTop: 20,
-    marginBottom: 25,
+    fontSize: 32,
+    color: "#17312e",
+    fontWeight: "800",
+    marginTop: 0,
+    marginBottom: 5,
   },
+  subtitle: { color: "#687774", lineHeight: 20, marginBottom: 22 },
 
   list: {
     paddingBottom: 20,
@@ -177,9 +256,11 @@ const styles = StyleSheet.create({
 
   card: {
     backgroundColor: "#fff",
-    borderRadius: 16,
+    borderRadius: 18,
     padding: 20,
     marginBottom: 15,
+    borderWidth: 1,
+    borderColor: "#e6e9df",
   },
 
   device: {
@@ -189,13 +270,20 @@ const styles = StyleSheet.create({
   },
 
   deviceId: {
-    fontSize: 15,
-    fontWeight: "600",
+    fontSize: 18,
+    color: "#193532",
+    fontWeight: "700",
   },
 
   deviceDetail: { color: "#6b7280", marginTop: 5 },
+  distance: { color: "#315b4d", fontSize: 15, fontWeight: "700", marginTop: 12 },
+  roleCard: { backgroundColor: "#e8eee7", borderRadius: 12, padding: 14, marginBottom: 16 },
+  roleTitle: { color: "#5c7066", fontSize: 10, fontWeight: "800", letterSpacing: 1.2, marginBottom: 5 },
+  roleText: { color: "#233d37", lineHeight: 20 },
   disconnectButton: { alignSelf: "flex-start", marginTop: 16, paddingVertical: 8, paddingHorizontal: 12, borderRadius: 8, backgroundColor: "#fef2f2" },
   disconnectText: { color: "#b91c1c", fontWeight: "700" },
+  ringButton: { alignSelf: "flex-start", marginTop: 9, paddingVertical: 9, paddingHorizontal: 12, borderRadius: 8, backgroundColor: "#e3ffa8" },
+  ringText: { color: "#193532", fontWeight: "700" },
 
   statusContainer: {
     flexDirection: "row",

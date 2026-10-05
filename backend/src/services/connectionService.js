@@ -1,5 +1,40 @@
 const Connection = require("../models/Connection");
 const Device = require("../models/Device");
+const MAX_LINKED_DEVICES_PER_HOST = 4;
+
+async function assertCanLink(requesterId, receiverId, excludeConnectionId) {
+  const activeStatuses = ["pending", "accepted"];
+  const exclude = excludeConnectionId ? { _id: { $ne: excludeConnectionId } } : {};
+
+  // A requester becomes a linked device and may only be linked to one host.
+  const requesterHasLink = await Connection.exists({
+    ...exclude,
+    status: { $in: activeStatuses },
+    $or: [{ requesterId }, { receiverId: requesterId }],
+  });
+  if (requesterHasLink) {
+    throw new Error("This device is already linked or has a pending connection. A linked device cannot connect to another device.");
+  }
+
+  // A linked device cannot become a host by accepting connections.
+  const receiverIsLinked = await Connection.exists({
+    ...exclude,
+    requesterId: receiverId,
+    status: { $in: activeStatuses },
+  });
+  if (receiverIsLinked) {
+    throw new Error("This device is linked to another host and cannot host connections.");
+  }
+
+  const hostLinks = await Connection.countDocuments({
+    ...exclude,
+    receiverId,
+    status: { $in: activeStatuses },
+  });
+  if (hostLinks >= MAX_LINKED_DEVICES_PER_HOST) {
+    throw new Error(`This host has reached its limit of ${MAX_LINKED_DEVICES_PER_HOST} linked devices.`);
+  }
+}
 
 function requireDeviceId(deviceId, fieldName = "deviceId") {
   if (typeof deviceId !== "string" || !deviceId.trim()) {
@@ -32,6 +67,7 @@ async function sendConnectionRequest(requesterId, receiverId) {
     if (existing.status === "pending") throw new Error("Connection request already exists");
     if (existing.status === "blocked") throw new Error("This connection is blocked");
 
+    await assertCanLink(requester, receiver, existing._id);
     existing.requesterId = requester;
     existing.receiverId = receiver;
     existing.status = "pending";
@@ -39,6 +75,8 @@ async function sendConnectionRequest(requesterId, receiverId) {
     existing.acceptedAt = null;
     return existing.save();
   }
+
+  await assertCanLink(requester, receiver);
 
   return Connection.create({
     requesterId: requester,
@@ -67,6 +105,10 @@ async function decideConnection(connectionId, deviceId, status) {
   }
   if (connection.status !== "pending") {
     throw new Error(`Connection request is already ${connection.status}`);
+  }
+
+  if (status === "accepted") {
+    await assertCanLink(connection.requesterId, connection.receiverId, connection._id);
   }
 
   connection.status = status;
@@ -135,6 +177,7 @@ async function getConnectedDeviceIds(deviceId) {
 }
 
 module.exports = {
+  MAX_LINKED_DEVICES_PER_HOST,
   sendConnectionRequest,
   sendConnectionRequestByCode,
   acceptConnection,

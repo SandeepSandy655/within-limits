@@ -6,6 +6,7 @@ const {
   acceptConnection,
   rejectConnection,
   disconnectDevice,
+  ringDevice,
   getDeviceConnections,
   getPendingRequests,
 } = require("../controllers/connectionController");
@@ -33,6 +34,7 @@ router.post(
 );
 
 router.post("/disconnect", disconnectDevice);
+router.post("/ring", ringDevice);
 
 router.get(
   "/device/:deviceId",

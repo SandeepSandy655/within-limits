@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Alert, StyleSheet, Text, View } from "react-native";
 import { WebView, type WebViewMessageEvent } from "react-native-webview";
 import * as Location from "expo-location";
+import BackButton from "../components/back-button";
 
 import { Device, getConnectedDevices } from "../services/connectionService";
 import { getDeviceProfile } from "../services/deviceStorage";
@@ -188,6 +189,8 @@ export default function LocationsScreen() {
         onError={() => setTileError(true)}
       />
 
+      <BackButton style={styles.mapBackButton} />
+
       <View style={styles.summary}>
         <Text style={styles.title}>Shared locations</Text>
         <Text style={styles.subtitle}>
@@ -223,13 +226,23 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#eef2f6" },
   summary: {
     position: "absolute",
-    top: 16,
+    top: 68,
     left: 16,
     right: 16,
     padding: 16,
     borderRadius: 16,
     backgroundColor: "#ffffff",
     elevation: 4,
+  },
+  mapBackButton: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    zIndex: 2,
+    backgroundColor: "#ffffff",
+    borderRadius: 9,
+    elevation: 4,
+    marginBottom: 0,
   },
   title: { fontSize: 18, fontWeight: "700", color: "#111827" },
   subtitle: { marginTop: 4, color: "#667085" },

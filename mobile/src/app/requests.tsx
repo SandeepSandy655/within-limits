@@ -10,6 +10,7 @@ import {
   View,
 } from "react-native";
 import { useFocusEffect } from "expo-router";
+import BackButton from "../components/back-button";
 
 import {
   acceptConnection,
@@ -158,6 +159,7 @@ export default function RequestsScreen() {
 
   return (
     <View style={styles.container}>
+      <BackButton />
       <Text style={styles.title}>Connection Requests</Text>
       <Text style={styles.subtitle}>
         Incoming pairing requests for this device
@@ -198,7 +200,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 30,
     fontWeight: "700",
-    marginTop: 20,
+    marginTop: 0,
   },
   subtitle: {
     color: "#777",

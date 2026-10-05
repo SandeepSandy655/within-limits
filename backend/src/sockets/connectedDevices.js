@@ -30,16 +30,21 @@ function getDeviceSocket(deviceId) {
 
 function emitToDevice(deviceId, event, data) {
   if (!ioInstance || !deviceId) {
-    return;
+    return false;
   }
 
   const socketId = connectedDevices.get(deviceId);
 
   if (!socketId) {
-    return;
+    return false;
   }
 
   ioInstance.to(socketId).emit(event, data);
+  return true;
+}
+
+function notifyDeviceRing(deviceId, payload) {
+  return emitToDevice(deviceId, "device-buzzer", payload);
 }
 
 function notifyConnectionRequest(connection) {
@@ -74,6 +79,7 @@ module.exports = {
   removeDeviceSocket,
   getDeviceSocket,
   emitToDevice,
+  notifyDeviceRing,
   notifyConnectionRequest,
   notifyConnectionAccepted,
   notifyConnectionRejected,

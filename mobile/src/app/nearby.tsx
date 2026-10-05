@@ -12,6 +12,7 @@ import {
 
 import * as Location from "expo-location";
 import { useRouter } from "expo-router";
+import BackButton from "../components/back-button";
 
 import {
   Device,
@@ -181,6 +182,7 @@ export default function NearbyScreen() {
   return (
     <View style={styles.container}>
       {/* HEADER */}
+      <BackButton />
 
       <Text style={styles.title}>
         Nearby Connections
@@ -270,7 +272,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 30,
     fontWeight: "700",
-    marginTop: 50,
+    marginTop: 0,
   },
 
   subtitle: {

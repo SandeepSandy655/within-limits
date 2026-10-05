@@ -7,7 +7,9 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
+  Vibration,
   View,
+  ScrollView,
 } from "react-native";
 
 import { useRouter } from "expo-router";
@@ -36,6 +38,8 @@ export default function HomeScreen() {
   const [deviceName, setDeviceName] =
     useState("");
   const [savingName, setSavingName] = useState(false);
+  const [needsRegistration, setNeedsRegistration] = useState(false);
+  const [startupVersion, setStartupVersion] = useState(0);
 
   const [connectionCode, setConnectionCode] =
     useState("");
@@ -69,6 +73,16 @@ export default function HomeScreen() {
           throw new Error(
             "Device profile not found"
           );
+        }
+
+        if (!deviceProfile.connectionCode) {
+          if (mounted) {
+            setDeviceName(deviceProfile.deviceName || "");
+            setNeedsRegistration(true);
+            setStatus("Register this device to get a pairing code.");
+            setLoading(false);
+          }
+          return;
         }
 
         console.log(
@@ -355,6 +369,15 @@ export default function HomeScreen() {
           handleConnectionRejected
         );
 
+        const handleDeviceBuzzer = (data: { fromDeviceName?: string; fromDeviceId?: string }) => {
+          Vibration.vibrate([0, 350, 220, 350, 220, 450]);
+          Alert.alert(
+            "Someone is looking for you",
+            `${data.fromDeviceName || data.fromDeviceId || "A connected device"} sent a buzzer.`
+          );
+        };
+        socket.on("device-buzzer", handleDeviceBuzzer);
+
         // ==========================================
         // 8. OPTIONAL GPS
         // ==========================================
@@ -458,7 +481,7 @@ export default function HomeScreen() {
 
       stopLiveLocation();
     };
-  }, [router]);
+  }, [router, startupVersion]);
 
   // ==========================================
   // OPEN CONNECT DEVICE
@@ -517,148 +540,119 @@ export default function HomeScreen() {
     }
   }
 
+  async function registerThisDevice() {
+    const normalizedName = deviceName.trim();
+    if (!normalizedName) {
+      Alert.alert("Choose a device name", "Give this device a name before registering it.");
+      return;
+    }
+    setSavingName(true);
+    try {
+      const profile = await getDeviceProfile();
+      const registered = await registerDevice({ ...profile, deviceName: normalizedName });
+      await saveDeviceProfile({
+        ...profile,
+        deviceName: registered.deviceName || normalizedName,
+        connectionCode: registered.connectionCode,
+      });
+      setNeedsRegistration(false);
+      setLoading(true);
+      setStartupVersion((version) => version + 1);
+    } catch (error) {
+      Alert.alert("Registration failed", error instanceof Error ? error.message : "Please try again.");
+    } finally {
+      setSavingName(false);
+    }
+  }
+
+  if (loading && !connectionCode && !needsRegistration) {
+    return (
+      <View style={styles.loadingScreen}>
+        <Text style={styles.brand}>WITHIN LIMITS</Text>
+        <ActivityIndicator color="#477a64" style={{ marginTop: 20 }} />
+        <Text style={styles.loadingText}>Checking this device…</Text>
+      </View>
+    );
+  }
+
   // ==========================================
   // UI
   // ==========================================
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.appTitle}>
-        SAND
-      </Text>
-
-      <View style={styles.card}>
-        {/* DEVICE NAME */}
-
-        <Text style={styles.fieldLabel}>This device</Text>
-        <TextInput
-          accessibilityLabel="Device name"
-          value={deviceName}
-          onChangeText={setDeviceName}
-          placeholder="Name this device"
-          maxLength={32}
-          style={styles.deviceNameInput}
-          returnKeyType="done"
-          onSubmitEditing={saveDeviceName}
-        />
-        <TouchableOpacity style={styles.renameButton} onPress={saveDeviceName} disabled={savingName || loading}>
-          <Text style={styles.renameButtonText}>{savingName ? "Saving…" : "Save device name"}</Text>
-        </TouchableOpacity>
-
-        {/* CONNECTION CODE */}
-
-        <Text style={styles.codeLabel}>
-          Your Connection Code
-        </Text>
-
-        <Text style={styles.code}>
-          {formatConnectionCode(
-            connectionCode
-          )}
-        </Text>
-
-        <Text style={styles.codeHint}>
-          Share this code with another device
-          to allow it to send you a pairing
-          request.
-        </Text>
-
-        {/* SERVER STATUS */}
-
-        <View style={styles.socketRow}>
-          <View
-            style={[
-              styles.socketDot,
-
-              socketStatus ===
-              "Connected"
-                ? styles.connectedDot
-                : styles.disconnectedDot,
-            ]}
-          />
-
-          <Text style={styles.socketText}>
-            Server: {socketStatus}
-          </Text>
-        </View>
-
-        {/* DEVICE STATUS */}
-
-        <Text style={styles.status}>
-          {status}
-        </Text>
-
-        {/* LOADING */}
-
-        {loading && (
-          <ActivityIndicator
-            size="large"
-            style={styles.loader}
-          />
+    <ScrollView style={styles.container} contentContainerStyle={styles.page}>
+      <View style={styles.header}>
+        <Text style={styles.brand}>WITHIN LIMITS</Text>
+        {!needsRegistration && (
+          <View style={styles.serverBadge}>
+            <View style={[styles.statusDot, socketStatus === "Connected" ? styles.connectedDot : styles.disconnectedDot]} />
+            <Text style={styles.serverBadgeText}>{socketStatus}</Text>
+          </View>
         )}
-
-        {/* CONNECT DEVICE */}
-
-        <TouchableOpacity
-          style={styles.primaryButton}
-          onPress={openConnect}
-          activeOpacity={0.8}
-        >
-          <Text
-            style={styles.primaryButtonText}
-          >
-            Connect Device
-          </Text>
-        </TouchableOpacity>
-
-        {/* MY CONNECTIONS */}
-
-        <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={openConnections}
-          activeOpacity={0.8}
-        >
-          <Text
-            style={styles.secondaryButtonText}
-          >
-            My Connections
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={openSharedMap}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.secondaryButtonText}>Shared Map</Text>
-        </TouchableOpacity>
-
-        {/* CONNECTION REQUESTS */}
-
-        <TouchableOpacity
-          style={styles.secondaryButton}
-          onPress={openRequests}
-          activeOpacity={0.8}
-        >
-          <Text
-            style={styles.secondaryButtonText}
-          >
-            Connection Requests
-          </Text>
-        </TouchableOpacity>
-
-        {/* OPTIONAL NEARBY */}
-
-        <TouchableOpacity
-          onPress={openNearby}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.nearbyLink}>
-            Nearby Devices (optional)
-          </Text>
-        </TouchableOpacity>
       </View>
-    </View>
+
+      {needsRegistration ? (
+        <View style={styles.registerCard}>
+          <Text style={styles.eyebrow}>FIRST TIME SETUP</Text>
+          <Text style={styles.headline}>Name this device</Text>
+          <Text style={styles.description}>This name helps people recognise your phone when they ask to connect.</Text>
+          <Text style={styles.fieldLabel}>DEVICE NAME</Text>
+          <TextInput
+            accessibilityLabel="Device name"
+            value={deviceName}
+            onChangeText={setDeviceName}
+            placeholder="e.g. Maya’s phone"
+            placeholderTextColor="#969b9b"
+            maxLength={32}
+            style={styles.deviceNameInput}
+            returnKeyType="done"
+            onSubmitEditing={registerThisDevice}
+          />
+          <TouchableOpacity style={styles.primaryButton} onPress={registerThisDevice} disabled={savingName} activeOpacity={0.8}>
+            {savingName ? <ActivityIndicator color="#102321" /> : <Text style={styles.primaryButtonText}>Register device</Text>}
+          </TouchableOpacity>
+          <Text style={styles.footnote}>Registration is for this device installation. It doesn’t create a personal account.</Text>
+        </View>
+      ) : (
+        <>
+          <Text style={styles.eyebrow}>YOUR DEVICES</Text>
+          <Text style={styles.headline}>Location sharing</Text>
+          <Text style={styles.description}>Choose who can see this device, and see the devices connected to you.</Text>
+
+          <View style={styles.deviceCard}>
+            <View style={styles.deviceCardTop}>
+              <View>
+                <Text style={styles.cardEyebrow}>THIS DEVICE</Text>
+                <Text style={styles.deviceName}>{deviceName || "My device"}</Text>
+              </View>
+              <View style={styles.onlinePill}><View style={styles.onlineDot} /><Text style={styles.onlineText}>{status === "Ready" ? "Ready" : status}</Text></View>
+            </View>
+            <Text style={styles.codeLabel}>HOST CODE</Text>
+            <Text style={styles.code}>{formatConnectionCode(connectionCode)}</Text>
+            <Text style={styles.codeHint}>A device using this code will request to join. Approve requests from people you trust. You can connect up to four devices.</Text>
+            {loading && <ActivityIndicator color="#477a64" style={styles.loader} />}
+            <View style={styles.nameEditor}>
+              <TextInput accessibilityLabel="Device name" value={deviceName} onChangeText={setDeviceName} placeholder="Name this device" maxLength={32} style={styles.inlineNameInput} returnKeyType="done" onSubmitEditing={saveDeviceName} />
+              <TouchableOpacity style={styles.saveNameButton} onPress={saveDeviceName} disabled={savingName || loading}>
+                <Text style={styles.saveNameText}>{savingName ? "Saving…" : "Save name"}</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <Text style={styles.sectionTitle}>LOCATION</Text>
+          <TouchableOpacity style={styles.mapButton} onPress={openSharedMap} activeOpacity={0.8}>
+            <View style={styles.mapButtonCopy}><Text style={styles.mapButtonTitle}>Shared map</Text><Text style={styles.mapButtonSubtitle}>View the latest locations from connected devices</Text></View>
+          </TouchableOpacity>
+          <Text style={styles.sectionTitle}>DEVICES</Text>
+          <View style={styles.actionRow}>
+            <TouchableOpacity style={styles.actionCard} onPress={openConnect} activeOpacity={0.8}><Text style={styles.actionTitle}>Join a host</Text><Text style={styles.actionSubtitle}>Enter their 8 digit code</Text></TouchableOpacity>
+            <TouchableOpacity style={styles.actionCard} onPress={openConnections} activeOpacity={0.8}><Text style={styles.actionTitle}>Connected devices</Text><Text style={styles.actionSubtitle}>Distance, status and controls</Text></TouchableOpacity>
+          </View>
+          <TouchableOpacity style={styles.requestsButton} onPress={openRequests} activeOpacity={0.8}><Text style={styles.requestsText}>Review connection requests</Text></TouchableOpacity>
+          <TouchableOpacity onPress={openNearby} activeOpacity={0.8}><Text style={styles.nearbyLink}>Nearby devices (optional)</Text></TouchableOpacity>
+        </>
+      )}
+    </ScrollView>
   );
 }
 
@@ -667,189 +661,54 @@ export default function HomeScreen() {
 // ==========================================
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-
-    backgroundColor: "#f5f7fa",
-
-    justifyContent: "center",
-
-    alignItems: "center",
-
-    padding: 20,
-  },
-
-  appTitle: {
-    fontSize: 22,
-
-    fontWeight: "800",
-
-    letterSpacing: 4,
-
-    marginBottom: 20,
-  },
-
-  card: {
-    width: "100%",
-
-    maxWidth: 400,
-
-    backgroundColor: "#ffffff",
-
-    borderRadius: 20,
-
-    padding: 25,
-
-    alignItems: "center",
-
-    elevation: 4,
-
-    shadowColor: "#000",
-
-    shadowOpacity: 0.1,
-
-    shadowRadius: 10,
-
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
-  },
-
-  deviceName: {
-    fontSize: 24,
-
-    fontWeight: "700",
-
-    marginBottom: 18,
-
-    textAlign: "center",
-  },
-
-  fieldLabel: { alignSelf: "flex-start", color: "#777", fontSize: 13, marginBottom: 6 },
-  deviceNameInput: { width: "100%", borderWidth: 1, borderColor: "#d1d5db", borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, fontSize: 18, fontWeight: "700", textAlign: "center", color: "#111827" },
-  renameButton: { paddingVertical: 8, paddingHorizontal: 12, marginBottom: 12 },
-  renameButtonText: { color: "#4f46e5", fontWeight: "700" },
-
-  codeLabel: {
-    fontSize: 14,
-
-    color: "#777",
-
-    marginBottom: 8,
-  },
-
-  code: {
-    fontSize: 36,
-
-    fontWeight: "800",
-
-    letterSpacing: 3,
-
-    marginBottom: 8,
-  },
-
-  codeHint: {
-    color: "#777",
-
-    textAlign: "center",
-
-    marginBottom: 18,
-
-    lineHeight: 20,
-  },
-
-  socketRow: {
-    flexDirection: "row",
-
-    alignItems: "center",
-  },
-
-  socketDot: {
-    width: 9,
-
-    height: 9,
-
-    borderRadius: 5,
-
-    marginRight: 8,
-  },
-
-  connectedDot: {
-    backgroundColor: "#22c55e",
-  },
-
-  disconnectedDot: {
-    backgroundColor: "#ef4444",
-  },
-
-  socketText: {
-    fontSize: 14,
-
-    color: "#555",
-  },
-
-  status: {
-    fontSize: 13,
-
-    color: "#888",
-
-    marginTop: 8,
-  },
-
-  loader: {
-    marginTop: 20,
-  },
-
-  primaryButton: {
-    backgroundColor: "#111827",
-
-    paddingVertical: 15,
-
-    borderRadius: 12,
-
-    marginTop: 22,
-
-    width: "100%",
-
-    alignItems: "center",
-  },
-
-  primaryButtonText: {
-    color: "#ffffff",
-
-    fontSize: 16,
-
-    fontWeight: "700",
-  },
-
-  secondaryButton: {
-    backgroundColor: "#EEF2FF",
-
-    paddingVertical: 14,
-
-    borderRadius: 12,
-
-    marginTop: 10,
-
-    width: "100%",
-
-    alignItems: "center",
-  },
-
-  secondaryButtonText: {
-    color: "#111827",
-
-    fontSize: 15,
-
-    fontWeight: "700",
-  },
-
-  nearbyLink: {
-    marginTop: 18,
-
-    color: "#6B7280",
-
-    fontSize: 13,
-  },
+  loadingScreen: { flex: 1, backgroundColor: "#f4f5ef", justifyContent: "center", alignItems: "center" },
+  loadingText: { color: "#687774", marginTop: 12, fontSize: 13 },
+  container: { flex: 1, backgroundColor: "#f4f5ef" },
+  page: { padding: 22, paddingTop: 18, paddingBottom: 40, width: "100%", maxWidth: 560, alignSelf: "center" },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 36 },
+  brand: { color: "#193532", fontSize: 13, letterSpacing: 2.2, fontWeight: "900" },
+  serverBadge: { flexDirection: "row", alignItems: "center", paddingVertical: 7, paddingHorizontal: 10, borderRadius: 20, backgroundColor: "#e6e9df" },
+  statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 7 },
+  connectedDot: { backgroundColor: "#4d9a6a" },
+  disconnectedDot: { backgroundColor: "#d67e64" },
+  serverBadgeText: { color: "#465753", fontSize: 11, fontWeight: "700" },
+  eyebrow: { color: "#6e827c", fontSize: 11, letterSpacing: 1.7, fontWeight: "800", marginBottom: 10 },
+  headline: { color: "#17312e", fontSize: 34, lineHeight: 39, fontWeight: "800", letterSpacing: -0.8, marginBottom: 8 },
+  description: { color: "#687774", fontSize: 15, lineHeight: 22, marginBottom: 22 },
+  deviceCard: { backgroundColor: "#fff", borderRadius: 12, padding: 18, marginBottom: 28, borderWidth: 1, borderColor: "#e2e5de" },
+  deviceCardTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 25 },
+  cardEyebrow: { color: "#78847d", fontSize: 10, letterSpacing: 1.2, fontWeight: "700", marginBottom: 5 },
+  deviceName: { color: "#243630", fontSize: 20, fontWeight: "700" },
+  onlinePill: { flexDirection: "row", alignItems: "center", backgroundColor: "#edf3ed", borderRadius: 7, paddingVertical: 6, paddingHorizontal: 9 },
+  onlineDot: { height: 6, width: 6, borderRadius: 3, backgroundColor: "#4d9a6a", marginRight: 6 },
+  onlineText: { color: "#385b47", fontSize: 10, fontWeight: "700", maxWidth: 90 },
+  codeLabel: { color: "#78847d", fontSize: 10, letterSpacing: 1.2, fontWeight: "700", marginBottom: 4 },
+  code: { color: "#233b31", fontSize: 32, letterSpacing: 3, fontWeight: "700", marginBottom: 7 },
+  codeHint: { color: "#69766f", fontSize: 12, lineHeight: 18, marginBottom: 17 },
+  nameEditor: { flexDirection: "row", alignItems: "center", gap: 8, borderTopWidth: 1, borderTopColor: "#e7e9e4", paddingTop: 12 },
+  inlineNameInput: { flex: 1, color: "#243630", fontSize: 13, paddingVertical: 7 },
+  saveNameButton: { backgroundColor: "#e8eee7", borderRadius: 8, paddingVertical: 9, paddingHorizontal: 11 },
+  saveNameText: { color: "#315743", fontSize: 11, fontWeight: "700" },
+  loader: { marginBottom: 10 },
+  sectionTitle: { color: "#82908b", letterSpacing: 1.3, fontSize: 10, fontWeight: "800", marginBottom: 10 },
+  mapButton: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "#fff", borderWidth: 1, borderColor: "#e2e5de", borderRadius: 12, padding: 16, marginBottom: 18 },
+  mapButtonCopy: { flex: 1 },
+  mapButtonTitle: { color: "#243630", fontSize: 15, fontWeight: "700", marginBottom: 4 },
+  mapButtonSubtitle: { color: "#68766f", fontSize: 12 },
+  arrow: { color: "#31554a", fontSize: 21, fontWeight: "600" },
+  actionRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
+  actionCard: { flex: 1, minHeight: 122, backgroundColor: "#fff", borderWidth: 1, borderColor: "#e6e9df", borderRadius: 16, padding: 15 },
+  actionTitle: { color: "#233d37", fontSize: 14, fontWeight: "700", marginBottom: 7 },
+  actionSubtitle: { color: "#7b8984", fontSize: 11, lineHeight: 16 },
+  requestsButton: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "#fff", borderColor: "#e6e9df", borderWidth: 1, borderRadius: 14, padding: 15 },
+  requestsText: { color: "#34554a", fontSize: 13, fontWeight: "700" },
+  nearbyLink: { alignSelf: "center", marginTop: 18, color: "#78857e", fontSize: 12 },
+  registerCard: { backgroundColor: "#fff", borderRadius: 22, padding: 22, borderWidth: 1, borderColor: "#e6e9df" },
+  iconCircle: { width: 42, height: 42, borderRadius: 21, backgroundColor: "#e3ffa8", alignItems: "center", justifyContent: "center", marginBottom: 22 },
+  iconText: { color: "#193532", fontSize: 12, fontWeight: "900" },
+  fieldLabel: { color: "#72817b", fontSize: 10, letterSpacing: 1.2, fontWeight: "800", marginBottom: 8 },
+  deviceNameInput: { width: "100%", borderWidth: 1, borderColor: "#d9dfd5", backgroundColor: "#fbfcf8", borderRadius: 12, paddingHorizontal: 14, paddingVertical: 13, fontSize: 16, color: "#203a35", marginBottom: 10 },
+  primaryButton: { minHeight: 52, backgroundColor: "#dfff9b", borderRadius: 12, alignItems: "center", justifyContent: "center", marginTop: 8 },
+  primaryButtonText: { color: "#193532", fontSize: 15, fontWeight: "800" },
+  footnote: { marginTop: 16, color: "#89958f", fontSize: 11, lineHeight: 16, textAlign: "center" },
 });

@@ -1,0 +1,6 @@
+node_modules
+npm-debug.log
+.env
+atlas-credentials.env
+serviceAccountKey.json
+.git

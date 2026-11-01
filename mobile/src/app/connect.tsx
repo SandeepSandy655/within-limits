@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import {
   Alert,
@@ -12,6 +12,7 @@ import {
 } from "react-native";
 
 import { useRouter } from "expo-router";
+import { CameraView, useCameraPermissions, type BarcodeScanningResult } from "expo-camera";
 import BackButton from "../components/back-button";
 
 import { getDeviceProfile } from "../services/deviceStorage";
@@ -28,6 +29,43 @@ export default function ConnectScreen() {
 
   const [loading, setLoading] =
     useState(false);
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const handledScan = useRef(false);
+
+  async function openScanner() {
+    if (!cameraPermission) {
+      Alert.alert("Camera unavailable", "Camera permission is still loading. Try again in a moment.");
+      return;
+    }
+
+    const permission = cameraPermission.granted
+      ? cameraPermission
+      : await requestCameraPermission();
+
+    if (!permission.granted) {
+      Alert.alert("Camera permission needed", "Allow camera access to scan a pairing QR code.");
+      return;
+    }
+
+    handledScan.current = false;
+    setScannerOpen(true);
+  }
+
+  function handleQrScanned(result: BarcodeScanningResult) {
+    if (handledScan.current) return;
+
+    const scannedCode = result.data.trim().replace(/\s/g, "");
+    handledScan.current = true;
+    setScannerOpen(false);
+
+    if (!/^\d{8}$/.test(scannedCode)) {
+      Alert.alert("QR code not recognized", "Scan a Within Limits pairing code.");
+      return;
+    }
+
+    setCode(scannedCode);
+  }
 
   async function connectDevice() {
     const cleanCode =
@@ -96,50 +134,55 @@ export default function ConnectScreen() {
           Enter the pairing code from the device you want to add. They’ll need to accept your request before locations are shared.
         </Text>
 
-        <TextInput
-          style={styles.input}
-          value={code}
-          onChangeText={(value) => {
-            const numbers =
-              value
-                .replace(/\D/g, "")
-                .slice(0, 8);
+        {scannerOpen ? (
+          <View style={styles.scannerPanel}>
+            <CameraView
+              style={styles.cameraPreview}
+              facing="back"
+              barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
+              onBarcodeScanned={handleQrScanned}
+            />
+            <Text style={styles.scannerHint}>Point the camera at the host device’s pairing QR code.</Text>
+            <TouchableOpacity onPress={() => setScannerOpen(false)}>
+              <Text style={styles.cancel}>Close scanner</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.scanButton} onPress={openScanner} disabled={loading}>
+            <Text style={styles.scanButtonText}>Scan a QR code</Text>
+          </TouchableOpacity>
+        )}
 
-            setCode(numbers);
-          }}
-          placeholder="0000 0000"
-          placeholderTextColor="#a6ada7"
-          keyboardType="number-pad"
-          maxLength={8}
-          autoFocus
-        />
+        {!scannerOpen && (
+          <>
+            <TextInput
+              style={styles.input}
+              value={code}
+              onChangeText={(value) => {
+                const numbers = value.replace(/\D/g, "").slice(0, 8);
+                setCode(numbers);
+              }}
+              placeholder="0000 0000"
+              placeholderTextColor="#a6ada7"
+              keyboardType="number-pad"
+              maxLength={8}
+            />
 
-        <TouchableOpacity
-          style={[
-            styles.button,
-            loading &&
-              styles.disabled,
-          ]}
-          onPress={connectDevice}
-          disabled={loading}
-        >
-          <Text style={styles.buttonText}>
-            {loading
-              ? "Sending..."
-              : "Send Connection Request"}
-          </Text>
-        </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.button, loading && styles.disabled]}
+              onPress={connectDevice}
+              disabled={loading}
+            >
+              <Text style={styles.buttonText}>
+                {loading ? "Sending..." : "Send Connection Request"}
+              </Text>
+            </TouchableOpacity>
 
-        <TouchableOpacity
-          onPress={() =>
-            router.back()
-          }
-          disabled={loading}
-        >
-          <Text style={styles.cancel}>
-            Cancel
-          </Text>
-        </TouchableOpacity>
+            <TouchableOpacity onPress={() => router.back()} disabled={loading}>
+              <Text style={styles.cancel}>Cancel</Text>
+            </TouchableOpacity>
+          </>
+        )}
       </View>
     </KeyboardAvoidingView>
   );
@@ -194,6 +237,20 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     color: "#193532",
   },
+  scanButton: {
+    minHeight: 48,
+    borderWidth: 1,
+    borderColor: "#cbd5cb",
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  scanButtonText: { color: "#315743", fontSize: 15, fontWeight: "700" },
+  scannerPanel: { marginBottom: 16, alignItems: "center" },
+  cameraPreview: { width: "100%", height: 230, borderRadius: 14, overflow: "hidden" },
+  scannerHint: { color: "#687774", fontSize: 13, lineHeight: 19, textAlign: "center", marginTop: 10 },
 
   button: {
     backgroundColor: "#dfff9b",

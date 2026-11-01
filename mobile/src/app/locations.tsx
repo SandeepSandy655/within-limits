@@ -62,7 +62,7 @@ export default function LocationsScreen() {
   const [loading, setLoading] = useState(true);
   const [mapReady, setMapReady] = useState(false);
   const [tileError, setTileError] = useState(false);
-  const webViewRef = useRef<WebView>(null);
+  const webViewRef = useRef<WebView<unknown>>(null);
   const fittedMarkerCount = useRef(0);
 
   const load = useCallback(async () => {
@@ -177,7 +177,7 @@ export default function LocationsScreen() {
 
   return (
     <View style={styles.container}>
-      <WebView
+      <WebView<unknown>
         ref={webViewRef}
         style={StyleSheet.absoluteFill}
         source={{ html: MAP_HTML }}

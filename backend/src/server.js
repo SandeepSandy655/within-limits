@@ -2,13 +2,15 @@ require("dotenv").config();
 
 const express = require("express");
 const http = require("node:http");
+const path = require("node:path");
 const cors = require("cors");
-const mongoose = require("mongoose");
 const { Server } = require("socket.io");
 
-const connectDatabase = require("./config/database");
+const { pool, connectDatabase, closeDatabase } = require("./config/database");
 const deviceRoutes = require("./routes/deviceRoutes");
 const connectionRoutes = require("./routes/connectionRoutes");
+const adminRoutes = require("./routes/adminRoutes");
+const { getFirebaseClientConfig } = require("./controllers/authController");
 const socketHandler = require("./sockets/socketHandler");
 const { setIo } = require("./sockets/connectedDevices");
 
@@ -29,13 +31,15 @@ app.get("/", (_req, res) => {
 });
 
 app.get("/health", (_req, res) => {
-  const databaseConnected = mongoose.connection.readyState === 1;
-  res.status(databaseConnected ? 200 : 503).json({
-    success: databaseConnected,
-    database: databaseConnected ? "connected" : "disconnected",
-  });
+  pool.query("SELECT 1")
+    .then(() => res.json({ success: true, database: "connected" }))
+    .catch(() => res.status(503).json({ success: false, database: "disconnected" }));
 });
 
+app.get("/api/auth/config", getFirebaseClientConfig);
+
+app.use("/admin", express.static(path.join(__dirname, "../public/admin")));
+app.use("/api/admin", adminRoutes);
 app.use("/api/devices", deviceRoutes);
 app.use("/api/connections", connectionRoutes);
 
@@ -72,7 +76,7 @@ async function startServer() {
 async function stopServer(signal = "shutdown") {
   console.log(`[server] ${signal}; closing connections`);
   await new Promise((resolve) => io.close(resolve));
-  await mongoose.disconnect();
+  await closeDatabase();
 }
 
 if (require.main === module) {

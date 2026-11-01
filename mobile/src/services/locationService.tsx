@@ -41,9 +41,6 @@ export async function startLiveLocation(
     console.log("Device ID:", deviceId);
     console.log("=================================");
 
-    // --------------------------------------------------
-    // 1. Request location permission
-    // --------------------------------------------------
 
     const { status } =
       await Location.requestForegroundPermissionsAsync();
@@ -55,15 +52,7 @@ export async function startLiveLocation(
 
     console.log("Location permission granted");
 
-    // --------------------------------------------------
-    // 2. Connect to Node.js backend
-    // --------------------------------------------------
-
     connectSocket(deviceId);
-
-    // --------------------------------------------------
-    // 3. Start watching real GPS location
-    // --------------------------------------------------
 
     locationSubscription =
       await Location.watchPositionAsync(

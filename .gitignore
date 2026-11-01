@@ -1,0 +1,7 @@
+.env
+backend/atlas-credentials.env
+**/node_modules/
+**/.expo/
+**/dist/
+**/build/
+*.log

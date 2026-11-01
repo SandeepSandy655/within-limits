@@ -17,7 +17,7 @@ async function registerDevice(req, res) {
       device,
     });
   } catch (error) {
-    return sendError(res, error, error.code === 11000 ? 409 : 400);
+    return sendError(res, error, error.code === 11000 || error.code === "23505" ? 409 : 400);
   }
 }
 

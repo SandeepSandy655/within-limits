@@ -1,21 +1,25 @@
-const { randomInt } = require("node:crypto");
-
-const Connection = require("../models/Connection");
-const Device = require("../models/Device");
-const Location = require("../models/Location");
+const { randomBytes, randomInt } = require("node:crypto");
+const { pool } = require("../config/database");
 
 const DEFAULT_SEARCH_RADIUS_METERS = 5_000;
 
+const DEVICE_SELECT = `
+  id AS "_id",
+  device_id AS "deviceId",
+  connection_code AS "connectionCode",
+  owner_id AS "ownerId",
+  device_name AS "deviceName",
+  device_type AS "deviceType",
+  platform,
+  status,
+  location,
+  last_seen AS "lastSeen",
+  created_at AS "createdAt",
+  updated_at AS "updatedAt"
+`;
+
 function createConnectionCode() {
   return String(randomInt(10_000_000, 100_000_000));
-}
-
-async function createUniqueConnectionCode() {
-  while (true) {
-    const code = createConnectionCode();
-    const exists = await Device.exists({ connectionCode: code });
-    if (!exists) return code;
-  }
 }
 
 function normalizeDeviceId(deviceId) {
@@ -34,6 +38,36 @@ function validateCoordinates(latitude, longitude) {
   }
 }
 
+function distanceMeters(latitude1, longitude1, latitude2, longitude2) {
+  const radians = (degrees) => degrees * Math.PI / 180;
+  const deltaLatitude = radians(latitude2 - latitude1);
+  const deltaLongitude = radians(longitude2 - longitude1);
+  const a = Math.sin(deltaLatitude / 2) ** 2
+    + Math.cos(radians(latitude1)) * Math.cos(radians(latitude2))
+    * Math.sin(deltaLongitude / 2) ** 2;
+  return 6_371_000 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function coordinatesFromLocation(location) {
+  const coordinates = location?.coordinates;
+  if (!Array.isArray(coordinates) || coordinates.length !== 2) return null;
+  const [longitude, latitude] = coordinates.map(Number);
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+  return { latitude, longitude };
+}
+
+async function createUniqueConnectionCode() {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const code = createConnectionCode();
+    const result = await pool.query(
+      "SELECT 1 FROM devices WHERE connection_code = $1 LIMIT 1",
+      [code]
+    );
+    if (result.rowCount === 0) return code;
+  }
+  throw new Error("Could not generate a unique connection code. Please retry.");
+}
+
 async function registerDevice(deviceData) {
   if (!deviceData || typeof deviceData !== "object") {
     throw new Error("Device details are required");
@@ -46,66 +80,79 @@ async function registerDevice(deviceData) {
   if (deviceData.deviceName !== undefined && !suppliedName) {
     throw new Error("deviceName must contain at least one visible character");
   }
-  let device = await Device.findOne({ deviceId });
 
-  if (!device) {
-    const connectionCode = await createUniqueConnectionCode();
-    try {
-      return await Device.create({
-        deviceId,
-        connectionCode,
-        ownerId: deviceData.ownerId || null,
-        deviceName: suppliedName || "My device",
-        deviceType: deviceData.deviceType || "mobile",
-        platform: deviceData.platform || "unknown",
-        status: "offline",
-      });
-    } catch (error) {
-      // If two startup requests race for the same ID, return the device
-      // created by the request that won the unique-index insert.
-      if (error.code !== 11000) throw error;
-      device = await Device.findOne({ deviceId });
-      if (!device) throw error;
+  const existingResult = await pool.query(
+    `SELECT ${DEVICE_SELECT} FROM devices WHERE device_id = $1`,
+    [deviceId]
+  );
+  const existing = existingResult.rows[0];
+  const connectionCode = existing?.connectionCode || await createUniqueConnectionCode();
+  const values = [
+    existing?._id || randomBytes(12).toString("hex"),
+    deviceId,
+    connectionCode,
+    deviceData.ownerId || existing?.ownerId || null,
+    suppliedName || existing?.deviceName || "My device",
+    deviceData.deviceType || existing?.deviceType || "mobile",
+    deviceData.platform || existing?.platform || "unknown",
+  ];
+
+  try {
+    const result = await pool.query(
+      `INSERT INTO devices (id, device_id, connection_code, owner_id, device_name, device_type, platform, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'offline')
+       ON CONFLICT (device_id) DO UPDATE SET
+         connection_code = COALESCE(devices.connection_code, EXCLUDED.connection_code),
+         owner_id = COALESCE(EXCLUDED.owner_id, devices.owner_id),
+         device_name = EXCLUDED.device_name,
+         device_type = EXCLUDED.device_type,
+         platform = EXCLUDED.platform,
+         updated_at = NOW()
+       RETURNING ${DEVICE_SELECT}`,
+      values
+    );
+    return result.rows[0];
+  } catch (error) {
+    if (error.code === "23505" && !existing) {
+      // A simultaneous registration may have won the device or code uniqueness race.
+      const retry = await pool.query(
+        `SELECT ${DEVICE_SELECT} FROM devices WHERE device_id = $1`,
+        [deviceId]
+      );
+      if (retry.rows[0]) return retry.rows[0];
     }
+    throw error;
   }
-
-  if (!device.connectionCode) {
-    device.connectionCode = await createUniqueConnectionCode();
-  }
-  device.ownerId = deviceData.ownerId || device.ownerId;
-  device.deviceName = suppliedName || device.deviceName;
-  device.deviceType = deviceData.deviceType || device.deviceType;
-  device.platform = deviceData.platform || device.platform;
-
-  await device.save();
-  return device;
 }
 
 async function getDevice(deviceId) {
-  return Device.findOne({ deviceId: normalizeDeviceId(deviceId) }).lean();
+  const result = await pool.query(
+    `SELECT ${DEVICE_SELECT} FROM devices WHERE device_id = $1`,
+    [normalizeDeviceId(deviceId)]
+  );
+  return result.rows[0] || null;
 }
 
 async function getAllDevices() {
-  return Device.find()
-    .sort({ createdAt: -1 })
-    .select("deviceId deviceName deviceType platform status lastSeen")
-    .lean();
+  const result = await pool.query(
+    `SELECT device_id AS "deviceId", device_name AS "deviceName",
+            device_type AS "deviceType", platform, status,
+            last_seen AS "lastSeen"
+     FROM devices ORDER BY created_at DESC`
+  );
+  return result.rows;
 }
 
 async function getPeerIds(deviceId) {
   const normalizedId = normalizeDeviceId(deviceId);
-  const connections = await Connection.find({
-    status: "accepted",
-    $or: [
-      { requesterId: normalizedId },
-      { receiverId: normalizedId },
-    ],
-  }).select("requesterId receiverId").lean();
-
-  return connections.map((connection) =>
-    connection.requesterId === normalizedId
-      ? connection.receiverId
-      : connection.requesterId
+  const result = await pool.query(
+    `SELECT requester_id AS "requesterId", receiver_id AS "receiverId"
+     FROM connections
+     WHERE status = 'accepted' AND (requester_id = $1 OR receiver_id = $1)`,
+    [normalizedId]
+  );
+  return result.rows.map((connection) =>
+    connection.requesterId === normalizedId ? connection.receiverId : connection.requesterId
   );
 }
 
@@ -120,30 +167,36 @@ async function getNearbyDevices(latitude, longitude, radius, deviceId) {
   const peerIds = await getPeerIds(normalizedId);
   if (peerIds.length === 0) return [];
 
-  return Device.find({
-    deviceId: { $in: peerIds },
-    status: "online",
-    location: {
-      $near: {
-        $geometry: {
-          type: "Point",
-          coordinates: [longitude, latitude],
-        },
-        $maxDistance: searchRadius,
-      },
-    },
-  })
-    .select("deviceId deviceName status location lastSeen")
-    .lean();
+  const result = await pool.query(
+    `SELECT device_id AS "deviceId", device_name AS "deviceName", status,
+            location, last_seen AS "lastSeen"
+     FROM devices WHERE device_id = ANY($1::text[]) AND status = 'online'`,
+    [peerIds]
+  );
+
+  return result.rows
+    .map((device) => {
+      const point = coordinatesFromLocation(device.location);
+      if (!point) return null;
+      return { ...device, distance: distanceMeters(latitude, longitude, point.latitude, point.longitude) };
+    })
+    .filter((device) => device && device.distance <= searchRadius)
+    .sort((first, second) => first.distance - second.distance)
+    .map(({ distance, ...device }) => device);
 }
 
 async function getConnectedDevices(deviceId) {
   const peerIds = await getPeerIds(deviceId);
   if (peerIds.length === 0) return [];
 
-  return Device.find({ deviceId: { $in: peerIds } })
-    .select("deviceId deviceName status location lastSeen")
-    .lean();
+  const result = await pool.query(
+    `SELECT device_id AS "deviceId", device_name AS "deviceName", status,
+            location, last_seen AS "lastSeen"
+     FROM devices WHERE device_id = ANY($1::text[])`,
+    [peerIds]
+  );
+  const byId = new Map(result.rows.map((device) => [device.deviceId, device]));
+  return peerIds.map((peerId) => byId.get(peerId)).filter(Boolean);
 }
 
 async function updateDeviceStatus(deviceId, status) {
@@ -152,53 +205,48 @@ async function updateDeviceStatus(deviceId, status) {
     throw new Error("status must be online or offline");
   }
 
-  const device = await Device.findOneAndUpdate(
-    { deviceId: normalizedId },
-    { $set: { status, lastSeen: new Date() } },
-    { returnDocument: "after", runValidators: true }
+  const result = await pool.query(
+    `UPDATE devices SET status = $2, last_seen = NOW(), updated_at = NOW()
+     WHERE device_id = $1 RETURNING ${DEVICE_SELECT}`,
+    [normalizedId, status]
   );
-
-  if (!device) throw new Error(`Device ${normalizedId} is not registered`);
-  return device;
+  if (!result.rows[0]) throw new Error(`Device ${normalizedId} is not registered`);
+  return result.rows[0];
 }
 
 async function updateDeviceLocation(deviceId, latitude, longitude) {
   const normalizedId = normalizeDeviceId(deviceId);
   validateCoordinates(latitude, longitude);
+  const location = { type: "Point", coordinates: [longitude, latitude] };
 
-  const device = await Device.findOneAndUpdate(
-    { deviceId: normalizedId },
-    {
-      $set: {
-        location: {
-          type: "Point",
-          coordinates: [longitude, latitude],
-        },
-        lastSeen: new Date(),
-      },
-    },
-    { returnDocument: "after", runValidators: true }
+  const result = await pool.query(
+    `UPDATE devices SET location = $2::jsonb, last_seen = NOW(), updated_at = NOW()
+     WHERE device_id = $1 RETURNING ${DEVICE_SELECT}`,
+    [normalizedId, JSON.stringify(location)]
   );
-
-  if (!device) throw new Error(`Device ${normalizedId} is not registered`);
-  return device;
+  if (!result.rows[0]) throw new Error(`Device ${normalizedId} is not registered`);
+  return result.rows[0];
 }
 
 async function saveLocationHistory(deviceId, latitude, longitude, accuracy, speed, heading) {
-  normalizeDeviceId(deviceId);
+  const normalizedId = normalizeDeviceId(deviceId);
   validateCoordinates(latitude, longitude);
-
-  return Location.create({
-    deviceId,
-    location: {
-      type: "Point",
-      coordinates: [longitude, latitude],
-    },
-    accuracy: Number.isFinite(accuracy) ? accuracy : null,
-    speed: Number.isFinite(speed) ? speed : null,
-    heading: Number.isFinite(heading) ? heading : null,
-    timestamp: new Date(),
-  });
+  const location = { type: "Point", coordinates: [longitude, latitude] };
+  const result = await pool.query(
+    `INSERT INTO locations (id, device_id, location, accuracy, speed, heading)
+     VALUES ($1, $2, $3::jsonb, $4, $5, $6)
+     RETURNING id AS "_id", device_id AS "deviceId", location, accuracy,
+               speed, heading, timestamp`,
+    [
+      randomBytes(12).toString("hex"),
+      normalizedId,
+      JSON.stringify(location),
+      Number.isFinite(accuracy) ? accuracy : null,
+      Number.isFinite(speed) ? speed : null,
+      Number.isFinite(heading) ? heading : null,
+    ]
+  );
+  return result.rows[0];
 }
 
 module.exports = {

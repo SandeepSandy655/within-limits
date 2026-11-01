@@ -13,6 +13,7 @@ import {
 } from "react-native";
 
 import { useRouter } from "expo-router";
+import QRCode from "react-native-qrcode-svg";
 
 import {
   startLiveLocation,
@@ -31,6 +32,7 @@ import {
 } from "../services/deviceStorage";
 
 import { registerDevice } from "../services/deviceService";
+import { getConnectedDevices, type Device } from "../services/connectionService";
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -52,6 +54,7 @@ export default function HomeScreen() {
 
   const [loading, setLoading] =
     useState(true);
+  const [connectedDevices, setConnectedDevices] = useState<Device[]>([]);
 
   useEffect(() => {
     let mounted = true;
@@ -378,9 +381,6 @@ export default function HomeScreen() {
         };
         socket.on("device-buzzer", handleDeviceBuzzer);
 
-        // ==========================================
-        // 8. OPTIONAL GPS
-        // ==========================================
 
         try {
           if (mounted) {
@@ -483,6 +483,26 @@ export default function HomeScreen() {
     };
   }, [router, startupVersion]);
 
+  useEffect(() => {
+    if (needsRegistration) return;
+    let active = true;
+    const refreshDevices = async () => {
+      try {
+        const profile = await getDeviceProfile();
+        const devices = await getConnectedDevices(profile.deviceId);
+        if (active) setConnectedDevices(devices);
+      } catch (error) {
+        console.warn("[HOME] Could not refresh linked devices:", error);
+      }
+    };
+    void refreshDevices();
+    const interval = setInterval(() => void refreshDevices(), 15_000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [needsRegistration, startupVersion]);
+
   // ==========================================
   // OPEN CONNECT DEVICE
   // ==========================================
@@ -582,7 +602,7 @@ export default function HomeScreen() {
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.page}>
       <View style={styles.header}>
-        <Text style={styles.brand}>WITHIN LIMITS</Text>
+        <View><Text style={styles.brand}>WITHIN LIMITS</Text><Text style={styles.headerCaption}>Group safety, at a glance</Text></View>
         {!needsRegistration && (
           <View style={styles.serverBadge}>
             <View style={[styles.statusDot, socketStatus === "Connected" ? styles.connectedDot : styles.disconnectedDot]} />
@@ -615,9 +635,14 @@ export default function HomeScreen() {
         </View>
       ) : (
         <>
-          <Text style={styles.eyebrow}>YOUR DEVICES</Text>
-          <Text style={styles.headline}>Location sharing</Text>
-          <Text style={styles.description}>Choose who can see this device, and see the devices connected to you.</Text>
+          <Text style={styles.eyebrow}>YOUR DASHBOARD</Text>
+          <Text style={styles.headline}>Stay with your group.</Text>
+          <Text style={styles.description}>See your circle at a glance and manage how your devices stay connected.</Text>
+
+          <View style={styles.metricsRow}>
+            <View style={styles.metricCard}><Text style={styles.metricValue}>{connectedDevices.length}</Text><Text style={styles.metricLabel}>LINKED DEVICES</Text></View>
+            <View style={styles.metricCard}><Text style={styles.metricValue}>{connectedDevices.filter((device) => device.status === "online").length}</Text><Text style={styles.metricLabel}>ONLINE NOW</Text></View>
+          </View>
 
           <View style={styles.deviceCard}>
             <View style={styles.deviceCardTop}>
@@ -627,8 +652,14 @@ export default function HomeScreen() {
               </View>
               <View style={styles.onlinePill}><View style={styles.onlineDot} /><Text style={styles.onlineText}>{status === "Ready" ? "Ready" : status}</Text></View>
             </View>
-            <Text style={styles.codeLabel}>HOST CODE</Text>
+            <View style={styles.codeHeading}><Text style={styles.codeLabel}>YOUR CONNECTION CODE</Text><Text style={styles.hostTag}>HOST</Text></View>
             <Text style={styles.code}>{formatConnectionCode(connectionCode)}</Text>
+            {connectionCode.length === 8 && (
+              <View style={styles.qrContainer}>
+                <QRCode value={connectionCode} size={148} color="#193532" backgroundColor="#ffffff" />
+                <Text style={styles.qrCaption}>Scan this code to request a connection</Text>
+              </View>
+            )}
             <Text style={styles.codeHint}>A device using this code will request to join. Approve requests from people you trust. You can connect up to four devices.</Text>
             {loading && <ActivityIndicator color="#477a64" style={styles.loader} />}
             <View style={styles.nameEditor}>
@@ -639,16 +670,20 @@ export default function HomeScreen() {
             </View>
           </View>
 
-          <Text style={styles.sectionTitle}>LOCATION</Text>
+          <Text style={styles.sectionTitle}>LIVE GROUP</Text>
           <TouchableOpacity style={styles.mapButton} onPress={openSharedMap} activeOpacity={0.8}>
-            <View style={styles.mapButtonCopy}><Text style={styles.mapButtonTitle}>Shared map</Text><Text style={styles.mapButtonSubtitle}>View the latest locations from connected devices</Text></View>
+            <View style={styles.mapIcon}><Text style={styles.mapIconText}>↗</Text></View><View style={styles.mapButtonCopy}><Text style={styles.mapButtonTitle}>Open shared map</Text><Text style={styles.mapButtonSubtitle}>View the latest locations from connected devices</Text></View><Text style={styles.mapChevron}>›</Text>
           </TouchableOpacity>
-          <Text style={styles.sectionTitle}>DEVICES</Text>
+          <Text style={styles.sectionTitle}>QUICK ACTIONS</Text>
           <View style={styles.actionRow}>
             <TouchableOpacity style={styles.actionCard} onPress={openConnect} activeOpacity={0.8}><Text style={styles.actionTitle}>Join a host</Text><Text style={styles.actionSubtitle}>Enter their 8 digit code</Text></TouchableOpacity>
             <TouchableOpacity style={styles.actionCard} onPress={openConnections} activeOpacity={0.8}><Text style={styles.actionTitle}>Connected devices</Text><Text style={styles.actionSubtitle}>Distance, status and controls</Text></TouchableOpacity>
           </View>
           <TouchableOpacity style={styles.requestsButton} onPress={openRequests} activeOpacity={0.8}><Text style={styles.requestsText}>Review connection requests</Text></TouchableOpacity>
+          <View style={styles.hardwareCard}>
+            <View style={styles.hardwareHeader}><View style={styles.hardwareIcon}><Text style={styles.hardwareIconText}>⌁</Text></View><View style={{ flex: 1 }}><Text style={styles.hardwareTitle}>Field hardware</Text><Text style={styles.hardwareSubtitle}>ESP32 checkpoints · BLE · RFID tags</Text></View><Text style={styles.plannedTag}>IN SETUP</Text></View>
+            <Text style={styles.hardwareCopy}>Hardware readings will appear here after devices are enrolled and begin reporting. Phone location sharing is active independently.</Text>
+          </View>
           <TouchableOpacity onPress={openNearby} activeOpacity={0.8}><Text style={styles.nearbyLink}>Nearby devices (optional)</Text></TouchableOpacity>
         </>
       )}
@@ -665,17 +700,22 @@ const styles = StyleSheet.create({
   loadingText: { color: "#687774", marginTop: 12, fontSize: 13 },
   container: { flex: 1, backgroundColor: "#f4f5ef" },
   page: { padding: 22, paddingTop: 18, paddingBottom: 40, width: "100%", maxWidth: 560, alignSelf: "center" },
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 36 },
+  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 28 },
   brand: { color: "#193532", fontSize: 13, letterSpacing: 2.2, fontWeight: "900" },
+  headerCaption: { color: "#83908a", fontSize: 11, marginTop: 4 },
   serverBadge: { flexDirection: "row", alignItems: "center", paddingVertical: 7, paddingHorizontal: 10, borderRadius: 20, backgroundColor: "#e6e9df" },
   statusDot: { width: 8, height: 8, borderRadius: 4, marginRight: 7 },
   connectedDot: { backgroundColor: "#4d9a6a" },
   disconnectedDot: { backgroundColor: "#d67e64" },
   serverBadgeText: { color: "#465753", fontSize: 11, fontWeight: "700" },
   eyebrow: { color: "#6e827c", fontSize: 11, letterSpacing: 1.7, fontWeight: "800", marginBottom: 10 },
-  headline: { color: "#17312e", fontSize: 34, lineHeight: 39, fontWeight: "800", letterSpacing: -0.8, marginBottom: 8 },
-  description: { color: "#687774", fontSize: 15, lineHeight: 22, marginBottom: 22 },
-  deviceCard: { backgroundColor: "#fff", borderRadius: 12, padding: 18, marginBottom: 28, borderWidth: 1, borderColor: "#e2e5de" },
+  headline: { color: "#17312e", fontSize: 32, lineHeight: 38, fontWeight: "800", letterSpacing: -0.8, marginBottom: 8 },
+  description: { color: "#687774", fontSize: 14, lineHeight: 21, marginBottom: 18 },
+  metricsRow: { flexDirection: "row", gap: 10, marginBottom: 18 },
+  metricCard: { flex: 1, borderRadius: 13, backgroundColor: "#e9eee6", paddingHorizontal: 15, paddingVertical: 12 },
+  metricValue: { color: "#193d32", fontSize: 23, fontWeight: "800" },
+  metricLabel: { color: "#75827a", fontSize: 9, fontWeight: "800", letterSpacing: 1, marginTop: 3 },
+  deviceCard: { backgroundColor: "#fff", borderRadius: 16, padding: 18, marginBottom: 25, borderWidth: 1, borderColor: "#e2e5de", shadowColor: "#193532", shadowOpacity: 0.04, shadowRadius: 12, shadowOffset: { width: 0, height: 5 }, elevation: 2 },
   deviceCardTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 25 },
   cardEyebrow: { color: "#78847d", fontSize: 10, letterSpacing: 1.2, fontWeight: "700", marginBottom: 5 },
   deviceName: { color: "#243630", fontSize: 20, fontWeight: "700" },
@@ -683,7 +723,11 @@ const styles = StyleSheet.create({
   onlineDot: { height: 6, width: 6, borderRadius: 3, backgroundColor: "#4d9a6a", marginRight: 6 },
   onlineText: { color: "#385b47", fontSize: 10, fontWeight: "700", maxWidth: 90 },
   codeLabel: { color: "#78847d", fontSize: 10, letterSpacing: 1.2, fontWeight: "700", marginBottom: 4 },
+  codeHeading: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  hostTag: { color: "#315743", backgroundColor: "#e8eee7", borderRadius: 20, overflow: "hidden", paddingHorizontal: 9, paddingVertical: 4, fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
   code: { color: "#233b31", fontSize: 32, letterSpacing: 3, fontWeight: "700", marginBottom: 7 },
+  qrContainer: { alignSelf: "center", alignItems: "center", gap: 9, marginVertical: 12, padding: 12, backgroundColor: "#fff", borderRadius: 10 },
+  qrCaption: { color: "#687774", fontSize: 11 },
   codeHint: { color: "#69766f", fontSize: 12, lineHeight: 18, marginBottom: 17 },
   nameEditor: { flexDirection: "row", alignItems: "center", gap: 8, borderTopWidth: 1, borderTopColor: "#e7e9e4", paddingTop: 12 },
   inlineNameInput: { flex: 1, color: "#243630", fontSize: 13, paddingVertical: 7 },
@@ -691,10 +735,13 @@ const styles = StyleSheet.create({
   saveNameText: { color: "#315743", fontSize: 11, fontWeight: "700" },
   loader: { marginBottom: 10 },
   sectionTitle: { color: "#82908b", letterSpacing: 1.3, fontSize: 10, fontWeight: "800", marginBottom: 10 },
-  mapButton: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "#fff", borderWidth: 1, borderColor: "#e2e5de", borderRadius: 12, padding: 16, marginBottom: 18 },
+  mapButton: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "#fff", borderWidth: 1, borderColor: "#e2e5de", borderRadius: 14, padding: 15, marginBottom: 20 },
+  mapIcon: { width: 38, height: 38, borderRadius: 11, backgroundColor: "#e7f0e8", alignItems: "center", justifyContent: "center", marginRight: 12 },
+  mapIconText: { fontSize: 21, fontWeight: "800", color: "#315743" },
   mapButtonCopy: { flex: 1 },
   mapButtonTitle: { color: "#243630", fontSize: 15, fontWeight: "700", marginBottom: 4 },
   mapButtonSubtitle: { color: "#68766f", fontSize: 12 },
+  mapChevron: { color: "#72817b", fontSize: 25, marginLeft: 8 },
   arrow: { color: "#31554a", fontSize: 21, fontWeight: "600" },
   actionRow: { flexDirection: "row", gap: 10, marginBottom: 10 },
   actionCard: { flex: 1, minHeight: 122, backgroundColor: "#fff", borderWidth: 1, borderColor: "#e6e9df", borderRadius: 16, padding: 15 },
@@ -702,6 +749,14 @@ const styles = StyleSheet.create({
   actionSubtitle: { color: "#7b8984", fontSize: 11, lineHeight: 16 },
   requestsButton: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", backgroundColor: "#fff", borderColor: "#e6e9df", borderWidth: 1, borderRadius: 14, padding: 15 },
   requestsText: { color: "#34554a", fontSize: 13, fontWeight: "700" },
+  hardwareCard: { marginTop: 18, backgroundColor: "#eef1e9", borderRadius: 14, padding: 15 },
+  hardwareHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  hardwareIcon: { width: 34, height: 34, borderRadius: 10, backgroundColor: "#dce5d9", justifyContent: "center", alignItems: "center" },
+  hardwareIconText: { fontSize: 20, color: "#34554a", fontWeight: "700" },
+  hardwareTitle: { color: "#29463b", fontSize: 13, fontWeight: "800" },
+  hardwareSubtitle: { color: "#77847d", fontSize: 10, marginTop: 3 },
+  plannedTag: { color: "#7a6744", backgroundColor: "#f3ead7", borderRadius: 20, overflow: "hidden", paddingHorizontal: 8, paddingVertical: 5, fontSize: 8, fontWeight: "800", letterSpacing: 0.5 },
+  hardwareCopy: { color: "#68766f", fontSize: 11, lineHeight: 16, marginTop: 12 },
   nearbyLink: { alignSelf: "center", marginTop: 18, color: "#78857e", fontSize: 12 },
   registerCard: { backgroundColor: "#fff", borderRadius: 22, padding: 22, borderWidth: 1, borderColor: "#e6e9df" },
   iconCircle: { width: 42, height: 42, borderRadius: 21, backgroundColor: "#e3ffa8", alignItems: "center", justifyContent: "center", marginBottom: 22 },

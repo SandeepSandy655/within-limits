@@ -1,0 +1,22 @@
+{
+  "name": "within-limits-project",
+  "private": true,
+  "version": "1.0.0",
+  "engines": { "node": ">=24 <25" },
+  "scripts": {
+    "setup": "npm --prefix backend ci && npm --prefix backend/admin-web ci && npm --prefix mobile ci",
+    "backend:start": "docker compose up -d --build --wait backend",
+    "backend:stop": "docker compose stop backend postgres",
+    "backend:logs": "docker compose logs --follow --tail 100 backend",
+    "backend:address": "node scripts/local-backend.cjs",
+    "demo:start": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-demo.ps1",
+    "admin:dev": "npm --prefix backend/admin-web run dev",
+    "admin:build": "npm --prefix backend/admin-web run build",
+    "mobile:dev": "npm --prefix mobile run phone",
+    "check": "npm --prefix backend test && npm --prefix backend/admin-web test && npm --prefix backend/admin-web run build && npm --prefix mobile test && npm --prefix mobile run typecheck && npm --prefix mobile run lint && npm --prefix mobile run build:check",
+    "test:integration": "npm --prefix backend run test:local",
+    "test:demo": "node scripts/demo-test-report.cjs",
+    "apk:check": "npm --prefix mobile run build:check",
+    "apk:build": "npm --prefix mobile run build:apk"
+  }
+}

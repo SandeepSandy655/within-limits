@@ -1,124 +1,74 @@
-import * as Location from "expo-location";
-import { getSocket, connectSocket } from "./socketService";
+import * as Location from 'expo-location';
+import { Alert, Linking, Platform } from 'react-native';
+import { getSocket } from './socketService';
+export interface DeviceLocation { deviceId: string; latitude: number; longitude: number; accuracy: number | null; speed: number | null; heading: number | null; timestamp: string; }
+let subscription: Location.LocationSubscription | null = null;
+let generation = 0;
+let heartbeat: ReturnType<typeof setInterval> | null = null;
+let latest: DeviceLocation | null = null;
+let sentAt = 0;
+let permissionRequest: Promise<void> | null = null;
+export type LocationAccessOptions = { showSettings?: boolean };
 
-export interface DeviceLocation {
-  deviceId: string;
-  latitude: number;
-  longitude: number;
-  accuracy: number | null;
-  speed: number | null;
-  heading: number | null;
+export async function locationAccessAvailable() {
+  const [permission, services] = await Promise.all([Location.getForegroundPermissionsAsync(), Location.hasServicesEnabledAsync()]);
+  return permission.granted && services;
 }
 
-let locationSubscription: Location.LocationSubscription | null = null;
-let lastSentAt = 0;
-let lastSentCoordinates: { latitude: number; longitude: number } | null = null;
-
-function distanceMeters(
-  first: { latitude: number; longitude: number },
-  second: { latitude: number; longitude: number }
-): number {
-  const radians = (degrees: number) => (degrees * Math.PI) / 180;
-  const latitudeDelta = radians(second.latitude - first.latitude);
-  const longitudeDelta = radians(second.longitude - first.longitude);
-  const haversine =
-    Math.sin(latitudeDelta / 2) ** 2 +
-    Math.cos(radians(first.latitude)) *
-      Math.cos(radians(second.latitude)) *
-      Math.sin(longitudeDelta / 2) ** 2;
-  return 6_371_000 * 2 * Math.atan2(Math.sqrt(haversine), Math.sqrt(1 - haversine));
+export function requestLocationAccess(options: LocationAccessOptions = {}): Promise<void> {
+  if (permissionRequest) return permissionRequest;
+  const pending = requestLocationAccessOnce(options).finally(() => {
+    if (permissionRequest === pending) permissionRequest = null;
+  });
+  permissionRequest = pending;
+  return pending;
 }
 
-export async function startLiveLocation(
-  deviceId: string
-): Promise<void> {
-  try {
-    if (locationSubscription) return;
-    lastSentAt = 0;
-    lastSentCoordinates = null;
-    console.log("=================================");
-    console.log("STARTING LIVE LOCATION");
-    console.log("Device ID:", deviceId);
-    console.log("=================================");
-
-
-    const { status } =
-      await Location.requestForegroundPermissionsAsync();
-
-    if (status !== Location.PermissionStatus.GRANTED) {
-      console.log("Location permission denied");
-      return;
+async function requestLocationAccessOnce({ showSettings = true }: LocationAccessOptions) {
+  const previous = await Location.getForegroundPermissionsAsync();
+  const permission = previous.granted || !previous.canAskAgain ? previous : await Location.requestForegroundPermissionsAsync();
+  if (!permission.granted) {
+    // After a denial, let the user continue. Offer Settings on a later attempt
+    // only when the OS can no longer display its permission request.
+    if (!previous.canAskAgain && showSettings && Platform.OS !== 'web') {
+      Alert.alert('Allow location access', 'Enable location access for Within Limits in Settings, then try again.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open settings', onPress: () => { void Linking.openSettings().catch(() => undefined); } },
+      ]);
     }
-
-    console.log("Location permission granted");
-
-    connectSocket(deviceId);
-
-    locationSubscription =
-      await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.Balanced,
-          timeInterval: 10_000,
-          distanceInterval: 10,
-        },
-
-        (location) => {
-          const {
-            latitude,
-            longitude,
-            accuracy,
-            speed,
-            heading,
-          } = location.coords;
-
-          const now = Date.now();
-          const currentCoordinates = { latitude, longitude };
-          const movedMeters = lastSentCoordinates
-            ? distanceMeters(lastSentCoordinates, currentCoordinates)
-            : Number.POSITIVE_INFINITY;
-          const elapsedMs = now - lastSentAt;
-
-          // Limit routine updates to one every 15 seconds. Send sooner after
-          // meaningful movement, but never more often than every 5 seconds.
-          if (
-            lastSentAt > 0 &&
-            (elapsedMs < 5_000 || (elapsedMs < 15_000 && movedMeters < 20))
-          ) return;
-
-          const locationData: DeviceLocation = {
-            deviceId,
-            latitude,
-            longitude,
-            accuracy: accuracy ?? null,
-            speed: speed ?? null,
-            heading: heading ?? null,
-          };
-
-          // Send GPS location to backend
-          getSocket()?.emit(
-            "device-location",
-            locationData
-          );
-          lastSentAt = now;
-          lastSentCoordinates = currentCoordinates;
-        }
-      );
-
-    console.log("GPS tracking started");
-  } catch (error) {
-    console.error(
-      "Failed to start live location:",
-      error
-    );
+    throw new Error('Allow location access in your device or browser settings to start sharing.');
+  }
+  if (!await Location.hasServicesEnabledAsync()) {
+    if (Platform.OS === 'android') {
+      try { await Location.enableNetworkProviderAsync(); }
+      catch { throw new Error('Location is still off. Accept the location request to start sharing.'); }
+    } else if (Platform.OS === 'ios' && showSettings) {
+      Alert.alert('Turn on Location Services', 'Open Settings → Privacy & Security → Location Services, turn it on, then return here.', [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Open settings', onPress: () => { void Linking.openSettings().catch(() => undefined); } },
+      ]);
+    }
+    if (!await Location.hasServicesEnabledAsync()) throw new Error('Turn on Location Services, then try again.');
   }
 }
 
-export function stopLiveLocation(): void {
-  if (locationSubscription) {
-    locationSubscription.remove();
-    locationSubscription = null;
-  }
-
-  lastSentAt = 0;
-  lastSentCoordinates = null;
+export async function startLiveLocation(deviceId: string, onLocation?: (location: DeviceLocation) => void, onError?: (message: string) => void) {
+  stopLiveLocation(); const ownGeneration = generation;
+  const permission = await Location.getForegroundPermissionsAsync();
+  if (!permission.granted) throw new Error('Allow location access in Settings to share your position.');
+  if (!await Location.hasServicesEnabledAsync()) throw new Error('Turn on GPS / Location Services, then try again.');
+  if (generation !== ownGeneration) return;
+  const send = () => {
+    const socket = getSocket();
+    // Do not queue coordinates while offline or resend an old fix as a new one.
+    if (socket?.connected && latest && Date.now() - Date.parse(latest.timestamp) < 30_000 && Date.now() - sentAt >= 5000) { socket.volatile.emit('device-location', latest); sentAt = Date.now(); }
+  };
+  const next = await Location.watchPositionAsync({ accuracy: Location.Accuracy.High, timeInterval: 10_000, distanceInterval: 0 }, (fix) => {
+    if (generation !== ownGeneration) return;
+    latest = { deviceId, ...fix.coords, timestamp: new Date(fix.timestamp).toISOString() };
+    onLocation?.(latest); send();
+  }, (message) => onError?.(message));
+  if (generation !== ownGeneration) { next.remove(); return; }
+  subscription = next; heartbeat = setInterval(send, 15_000);
 }
+export function stopLiveLocation() { generation++; subscription?.remove(); subscription = null; if (heartbeat) clearInterval(heartbeat); heartbeat = null; latest = null; sentAt = 0; }

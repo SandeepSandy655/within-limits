@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "107274052342",
+    "project_id": "within-limits-540d8",
+    "storage_bucket": "within-limits-540d8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:107274052342:android:4c7ff08fad6d87f6b582d7",
+        "android_client_info": {
+          "package_name": "com.withinlimits.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "107274052342-s75p521sjsviep3booni47rt39g39deq.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAf6Yp1dcm2yhICnq0mNhmlA-2w0gFurmU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "107274052342-s75p521sjsviep3booni47rt39g39deq.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

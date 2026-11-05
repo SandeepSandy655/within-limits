@@ -3,5 +3,33 @@ backend/atlas-credentials.env
 **/node_modules/
 **/.expo/
 **/dist/
+**/dist-*/
 **/build/
 *.log
+backend/.private/
+firmware/**/config.h
+
+# Personal notes and presentation files stay on this computer.
+*.md
+*.MD
+*.pptx
+reports/
+
+# Credentials and machine-specific state.
+**/.env*
+!**/.env.example
+**/.private/
+**/.vercel/
+**/*serviceAccount*.json
+**/*service-account*.json
+**/*.pem
+**/*.key
+**/*.jks
+**/*.keystore
+**/*.apk
+**/*.aab
+**/coverage/
+**/*.tsbuildinfo
+backend/public/admin/
+.DS_Store
+Thumbs.db

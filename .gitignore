@@ -13,6 +13,11 @@ firmware/**/config.h
 *.md
 *.MD
 *.pptx
+*.ppt
+*.PPTX
+*.PPT
+*.potx
+*.ppsx
 reports/
 
 # Credentials and machine-specific state.

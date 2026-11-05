@@ -6,7 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "build:vercel": "node scripts/check-hosting.cjs && vite build --mode vercel",
+    "preview": "vite preview",
+    "test": "node --test test/*.test.js",
+    "test:browser": "node --test test/dashboard.browser.cjs"
   },
   "dependencies": {
     "firebase": "12.19.0",
@@ -19,6 +22,7 @@
     "vite": "8.3.5"
   },
   "overrides": {
+    "@firebase/app": "0.16.2",
     "@grpc/grpc-js": "1.14.5"
   }
 }

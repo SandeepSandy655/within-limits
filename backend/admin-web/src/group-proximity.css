@@ -1,0 +1,46 @@
+.group-dialog { width:min(880px,calc(100vw - 40px)); max-height:min(720px,calc(100dvh - 40px)); padding:0; border:1px solid var(--line); border-radius:12px; color:var(--ink); box-shadow:0 20px 70px #152b3133; }
+.group-dialog[open] { display:flex; flex-direction:column; }
+.group-dialog::backdrop { background:#182c2366; }
+.group-dialog-heading { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:20px 24px; border-bottom:1px solid var(--line); flex-shrink:0; }
+.group-dialog-heading h2 { font-size:20px; }
+.group-dialog-heading p { margin-top:5px; font-size:12px; color:var(--muted); }
+.group-dialog-body { overflow-y:auto; min-height:0; }
+.group-dialog-footer { display:flex; justify-content:space-between; gap:12px; padding:13px 24px; border-top:1px solid var(--line); background:var(--soft); color:var(--muted); font-size:11px; flex-shrink:0; }
+.group-proximity { padding:20px 24px 16px; }
+.gp-toolbar { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-bottom:18px; }
+.gp-toolbar h3 { font-size:14px; line-height:1.5; }
+.gp-toolbar p { margin-top:4px; color:var(--muted); font-size:12px; line-height:1.5; }
+.gp-together .gp-toolbar h3 { color:#246b49; }
+.gp-alert .gp-toolbar h3,.gp-error { color:#a13f29; }
+.gp-alert-note { margin:0 0 16px; padding:12px; color:#923d28; background:#fff3ed; border:1px solid #eed3c7; border-radius:6px; font-size:12px; line-height:1.6; }
+.gp-table-wrap { width:100%; }
+.gp-member-table { width:100%; min-width:0; table-layout:fixed; }
+.gp-member-table th { font-size:11px; padding:10px 12px; }
+.gp-member-table td { padding:13px 12px; vertical-align:middle; overflow-wrap:anywhere; }
+.gp-member-table th:first-child { width:24%; }
+.gp-member-table th:nth-child(2) { width:36%; }
+.gp-member-table td strong { font-size:13px; }
+.gp-member-table td small { display:block; font-size:11px; color:var(--muted); margin-top:4px; line-height:1.5; }
+.gp-member-table td select { border:1px solid #ccd7cf; border-radius:5px; padding:8px; font-size:12px; font-weight:400; background:#fff; }
+.gp-member-table .needs-check { background:#fff7f3; }
+.gp-status { display:inline-flex; align-items:center; gap:6px; color:var(--muted); font-size:12px; }
+.gp-status i { width:6px; height:6px; flex-shrink:0; border-radius:50%; background:currentColor; }
+.gp-status.near { color:#29794f; }
+.gp-status.far,.gp-status.lost { color:#a15421; }
+.gp-device-link { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:4px; font-size:12px; }
+.gp-device-link .text-button { font-size:11px; min-height:28px; padding:4px; }
+.gp-footnote { padding-top:14px; color:var(--muted); font-size:11px; line-height:1.6; }
+.gp-error { font-size:12px; margin:8px 0; }
+@media (max-width:600px) {
+  .group-dialog { width:calc(100vw - 20px); max-height:calc(100dvh - 24px); }
+  .group-dialog-heading { padding:16px; }
+  .group-dialog-heading h2 { font-size:18px; }
+  .group-proximity { padding:16px 12px; }
+  .gp-toolbar { gap:10px; align-items:flex-start; }
+  .gp-toolbar .quiet-button { font-size:11px; padding:8px; }
+  .gp-member-table th,.gp-member-table td { padding:10px 6px; font-size:11px; }
+  .gp-member-table td strong,.gp-status { font-size:11px; }
+  .gp-member-table th:first-child { width:23%; }
+  .gp-member-table th:nth-child(2) { width:34%; }
+  .group-dialog-footer { padding:12px 16px; font-size:10px; flex-wrap:wrap; }
+}

@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url";
 
 const projectDir = fileURLToPath(new URL(".", import.meta.url));
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   plugins: [react()],
-  base: "/admin/",
+  base: mode === "vercel" ? "/" : "/admin/",
   build: {
-    outDir: resolve(projectDir, "../public/admin"),
+    outDir: resolve(projectDir, mode === "vercel" ? "dist" : "../public/admin"),
     emptyOutDir: true,
     chunkSizeWarningLimit: 600,
   },
@@ -18,4 +18,4 @@ export default defineConfig({
       "/api": "http://localhost:5000",
     },
   },
-});
+}));

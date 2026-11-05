@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "build:vercel": "node scripts/check-hosting.cjs && vite build --mode vercel",
+    "build:render": "node scripts/check-hosting.cjs && vite build --mode render",
     "preview": "vite preview",
     "test": "node --test test/*.test.js",
     "test:browser": "node --test test/dashboard.browser.cjs"

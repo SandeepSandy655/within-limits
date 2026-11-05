@@ -7,9 +7,9 @@ const projectDir = fileURLToPath(new URL(".", import.meta.url));
 
 export default defineConfig(({ mode }) => ({
   plugins: [react()],
-  base: mode === "vercel" ? "/" : "/admin/",
+  base: mode === "render" ? "/" : "/admin/",
   build: {
-    outDir: resolve(projectDir, mode === "vercel" ? "dist" : "../public/admin"),
+    outDir: resolve(projectDir, mode === "render" ? "dist" : "../public/admin"),
     emptyOutDir: true,
     chunkSizeWarningLimit: 600,
   },

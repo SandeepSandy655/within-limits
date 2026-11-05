@@ -1,7 +1,11 @@
 const { randomBytes } = require("node:crypto");
-const { pool, withTransaction } = require("../config/database");
+const { pool } = require("../config/database");
+const { requireConnectionRange } = require("./mobileRange");
+const { withConnectionActivity } = require("./notificationService");
 
-const MAX_LINKED_DEVICES_PER_HOST = 4;
+const MAX_GROUP_DEVICES = 4;
+const MAX_LINKED_DEVICES_PER_HOST = MAX_GROUP_DEVICES - 1;
+const PENDING_TTL_MINUTES = 10;
 const ACTIVE_STATUSES = ["pending", "accepted"];
 const CONNECTION_SELECT = `
   id AS "_id",
@@ -10,6 +14,10 @@ const CONNECTION_SELECT = `
   status,
   created_at AS "createdAt",
   accepted_at AS "acceptedAt"
+  , range_meters AS "rangeMeters", out_of_range_since AS "outOfRangeSince"
+  , (SELECT device_name FROM devices WHERE device_id = connections.requester_id) AS "requesterName"
+  , (SELECT device_name FROM devices WHERE device_id = connections.receiver_id) AS "receiverName"
+  , created_at + INTERVAL '10 minutes' AS "expiresAt"
 `;
 
 function requireDeviceId(deviceId, fieldName = "deviceId") {
@@ -25,17 +33,27 @@ async function lockDevices(client, deviceIds) {
   }
 }
 
+async function expirePending(client, deviceIds) {
+  await client.query(`UPDATE connections SET status = 'rejected'
+    WHERE status = 'pending' AND created_at <= NOW() - INTERVAL '10 minutes'
+      AND (requester_id = ANY($1::text[]) OR receiver_id = ANY($1::text[]))`, [deviceIds]);
+}
+
 async function assertCanLink(client, requesterId, receiverId, excludeConnectionId) {
-  const excludeSql = excludeConnectionId ? "AND id <> $4" : "";
-  const params = [requesterId, receiverId, ACTIVE_STATUSES];
-  if (excludeConnectionId) params.push(excludeConnectionId);
+  const excludeSql = excludeConnectionId ? "AND id <> $3" : "";
+  const requesterParams = [requesterId, ACTIVE_STATUSES];
+  const receiverParams = [receiverId, ACTIVE_STATUSES];
+  if (excludeConnectionId) {
+    requesterParams.push(excludeConnectionId);
+    receiverParams.push(excludeConnectionId);
+  }
 
   const requesterHasLink = await client.query(
     `SELECT 1 FROM connections
-     WHERE status = ANY($3::text[])
+     WHERE status = ANY($2::text[])
        AND (requester_id = $1 OR receiver_id = $1) ${excludeSql}
      LIMIT 1`,
-    params
+    requesterParams
   );
   if (requesterHasLink.rowCount) {
     throw new Error("This device is already linked or has a pending connection. A linked device cannot connect to another device.");
@@ -43,9 +61,9 @@ async function assertCanLink(client, requesterId, receiverId, excludeConnectionI
 
   const receiverIsLinked = await client.query(
     `SELECT 1 FROM connections
-     WHERE requester_id = $2 AND status = ANY($3::text[]) ${excludeSql}
+     WHERE requester_id = $1 AND status = ANY($2::text[]) ${excludeSql}
      LIMIT 1`,
-    params
+    receiverParams
   );
   if (receiverIsLinked.rowCount) {
     throw new Error("This device is linked to another host and cannot host connections.");
@@ -53,11 +71,11 @@ async function assertCanLink(client, requesterId, receiverId, excludeConnectionI
 
   const hostLinks = await client.query(
     `SELECT COUNT(*)::int AS count FROM connections
-     WHERE receiver_id = $2 AND status = ANY($3::text[]) ${excludeSql}`,
-    params
+     WHERE receiver_id = $1 AND status = ANY($2::text[]) ${excludeSql}`,
+    receiverParams
   );
   if (hostLinks.rows[0].count >= MAX_LINKED_DEVICES_PER_HOST) {
-    throw new Error(`This host has reached its limit of ${MAX_LINKED_DEVICES_PER_HOST} linked devices.`);
+    throw new Error("This group is full: 4 devices total, including the host. Pending requests reserve a space.");
   }
 }
 
@@ -66,8 +84,9 @@ async function sendConnectionRequest(requesterId, receiverId) {
   const receiver = requireDeviceId(receiverId, "receiverId");
   if (requester === receiver) throw new Error("A device cannot connect to itself");
 
-  return withTransaction(async (client) => {
+  return withConnectionActivity("connection-request", requester, async (client) => {
     await lockDevices(client, [requester, receiver]);
+    await expirePending(client, [requester, receiver]);
     const deviceCheck = await client.query(
       "SELECT device_id FROM devices WHERE device_id = ANY($1::text[])",
       [[requester, receiver]]
@@ -86,14 +105,15 @@ async function sendConnectionRequest(requesterId, receiverId) {
     const existing = existingResult.rows[0];
 
     if (existing) {
-      if (existing.status === "accepted") throw new Error("Devices are already connected");
-      if (existing.status === "pending") throw new Error("Connection request already exists");
+      if (["accepted", "pending"].includes(existing.status) && existing.requesterId === requester) return existing;
+      if (["accepted", "pending"].includes(existing.status)) throw new Error("A connection already exists between these devices.");
       if (existing.status === "blocked") throw new Error("This connection is blocked");
 
       await assertCanLink(client, requester, receiver, existing._id);
       const updated = await client.query(
         `UPDATE connections SET requester_id = $2, receiver_id = $3,
-                status = 'pending', created_at = NOW(), accepted_at = NULL
+                status = 'pending', created_at = NOW(), accepted_at = NULL,
+                range_meters = 1000, out_of_range_since = NULL
          WHERE id = $1 RETURNING ${CONNECTION_SELECT}`,
         [existing._id, requester, receiver]
       );
@@ -112,8 +132,7 @@ async function sendConnectionRequest(requesterId, receiverId) {
 
 async function sendConnectionRequestByCode(requesterId, connectionCode) {
   const requester = requireDeviceId(requesterId, "requesterId");
-  const code = String(connectionCode ?? "").replace(/\D/g, "");
-  if (code.length !== 8) throw new Error("Connection code must be 8 digits");
+  const code = normalizeCode(connectionCode);
 
   const receiverResult = await pool.query(
     "SELECT device_id AS \"deviceId\" FROM devices WHERE connection_code = $1",
@@ -124,11 +143,11 @@ async function sendConnectionRequestByCode(requesterId, connectionCode) {
   return sendConnectionRequest(requester, receiver.deviceId);
 }
 
-async function decideConnection(connectionId, deviceId, status) {
+async function decideConnection(connectionId, deviceId, status, rangeMeters) {
   if (!connectionId) throw new Error("connectionId is required");
   const actor = requireDeviceId(deviceId);
 
-  return withTransaction(async (client) => {
+  return withConnectionActivity(`connection-${status}`, actor, async (client) => {
     const initial = await client.query(
       `SELECT requester_id AS "requesterId", receiver_id AS "receiverId"
        FROM connections WHERE id = $1`,
@@ -145,24 +164,29 @@ async function decideConnection(connectionId, deviceId, status) {
     const connection = result.rows[0];
     if (!connection) throw new Error("Connection request not found");
     if (connection.receiverId !== actor) throw new Error("Only the receiving device can respond to this request");
+    if (connection.status === status) return connection;
     if (connection.status !== "pending") throw new Error(`Connection request is already ${connection.status}`);
+    if (new Date(connection.expiresAt).getTime() <= Date.now()) throw new Error("This request expired. Ask the member to join again.");
 
     if (status === "accepted") {
+      requireConnectionRange(rangeMeters);
+      await expirePending(client, [connection.requesterId, connection.receiverId]);
       await assertCanLink(client, connection.requesterId, connection.receiverId, connection._id);
     }
 
     const updated = await client.query(
       `UPDATE connections SET status = $2,
-              accepted_at = CASE WHEN $2 = 'accepted' THEN NOW() ELSE accepted_at END
+              accepted_at = CASE WHEN $2 = 'accepted' THEN NOW() ELSE accepted_at END,
+              range_meters = CASE WHEN $2 = 'accepted' THEN $3 ELSE range_meters END
        WHERE id = $1 RETURNING ${CONNECTION_SELECT}`,
-      [connection._id, status]
+      [connection._id, status, status === "accepted" ? rangeMeters : null]
     );
     return updated.rows[0];
   });
 }
 
-function acceptConnection(connectionId, deviceId) {
-  return decideConnection(connectionId, deviceId, "accepted");
+function acceptConnection(connectionId, deviceId, rangeMeters) {
+  return decideConnection(connectionId, deviceId, "accepted", rangeMeters);
 }
 
 function rejectConnection(connectionId, deviceId) {
@@ -172,7 +196,7 @@ function rejectConnection(connectionId, deviceId) {
 async function disconnectDevice(connectionId, deviceId) {
   if (!connectionId) throw new Error("connectionId is required");
   const actor = requireDeviceId(deviceId);
-  return withTransaction(async (client) => {
+  return withConnectionActivity("connection-disconnected", actor, async (client) => {
     const selected = await client.query(
       `SELECT ${CONNECTION_SELECT} FROM connections
        WHERE id = $1 AND status = 'accepted' FOR UPDATE`,
@@ -196,14 +220,14 @@ async function getDeviceConnections(deviceId) {
      ORDER BY created_at DESC`,
     [id]
   );
-  return result.rows;
+  return result.rows.filter((row) => row.status !== "pending" || new Date(row.expiresAt).getTime() > Date.now());
 }
 
 async function getPendingRequests(deviceId) {
   const id = requireDeviceId(deviceId);
   const result = await pool.query(
     `SELECT ${CONNECTION_SELECT} FROM connections
-     WHERE receiver_id = $1 AND status = 'pending'
+     WHERE receiver_id = $1 AND status = 'pending' AND created_at > NOW() - INTERVAL '10 minutes'
      ORDER BY created_at DESC`,
     [id]
   );
@@ -236,7 +260,42 @@ async function getConnectedDeviceIds(deviceId) {
   );
 }
 
+function normalizeCode(value) {
+  const code = typeof value === "string" ? value.replace(/[\s-]/g, "") : "";
+  if (!/^\d{8}$/.test(code)) throw new Error("Connection code must be 8 digits.");
+  return code;
+}
+
+async function previewHost(connectionCode, requesterId) {
+  const result = await pool.query(`SELECT device_id AS "deviceId", device_name AS "deviceName", status
+    FROM devices WHERE connection_code = $1 AND owner_id IS NOT NULL`, [normalizeCode(connectionCode)]);
+  const host = result.rows[0];
+  if (!host) throw new Error("No host found. Check the code and try again.");
+  if (host.deviceId === requesterId) throw new Error("That is your code. Use the host's code to join their group.");
+  const links = await getDeviceConnections(host.deviceId);
+  const active = links.filter((link) => ACTIVE_STATUSES.includes(link.status));
+  if (active.some((link) => link.requesterId === host.deviceId)) throw new Error("This device is a member of another group and cannot host.");
+  return { ...host, occupied: active.length + 1, available: Math.max(0, MAX_LINKED_DEVICES_PER_HOST - active.length), maxDevices: MAX_GROUP_DEVICES };
+}
+
+async function cancelConnection(connectionId, deviceId) {
+  return withConnectionActivity("connection-cancelled", deviceId, async (client) => {
+    const selected = await client.query(`SELECT ${CONNECTION_SELECT} FROM connections WHERE id = $1 FOR UPDATE`, [connectionId]);
+    const connection = selected.rows[0];
+    if (!connection || connection.requesterId !== deviceId) throw new Error("Join request not found.");
+    if (connection.status === "rejected") return connection;
+    if (connection.status !== "pending") throw new Error("The host already responded. Open your group to leave.");
+    await client.query("UPDATE connections SET status = 'rejected' WHERE id = $1", [connectionId]);
+    return { ...connection, status: "rejected" };
+  });
+}
+
 module.exports = {
+  MAX_GROUP_DEVICES,
+  PENDING_TTL_MINUTES,
+  normalizeCode,
+  previewHost,
+  cancelConnection,
   MAX_LINKED_DEVICES_PER_HOST,
   sendConnectionRequest,
   sendConnectionRequestByCode,

@@ -1,5 +1,6 @@
 const connectionService = require("../services/connectionService");
 const deviceService = require("../services/deviceService");
+const { createNotification } = require("../services/notificationService");
 const {
   notifyConnectionRequest,
   notifyConnectionAccepted,
@@ -97,7 +98,8 @@ async function acceptConnection(
     const connection =
       await connectionService.acceptConnection(
         connectionId,
-        deviceId
+        deviceId,
+        req.body.rangeMeters
       );
 
     notifyConnectionAccepted(connection);
@@ -176,14 +178,25 @@ async function ringDevice(req, res) {
     if (!sender || !target) {
       return res.status(404).json({ success: false, message: "Device not found." });
     }
+    const connection = (await connectionService.getDeviceConnections(deviceId)).find((link) =>
+      link.status === "accepted" && (link.requesterId === targetDeviceId || link.receiverId === targetDeviceId));
+    if (!connection) return res.status(403).json({ success: false, message: "This connection has ended." });
+    const fromHost = connection.receiverId === deviceId;
+    const notification = await createNotification({
+      deviceId: targetDeviceId, relatedDeviceId: deviceId, connectionId: connection._id,
+      kind: fromHost ? "host-searching" : "member-searching",
+      title: fromHost ? "Your host is searching for you" : "A member is looking for you",
+      body: `${sender.deviceName} is trying to reach you. Please contact ${fromHost ? "your host" : "them"}.`,
+    });
     const delivered = notifyDeviceRing(targetDeviceId, {
       fromDeviceId: sender.deviceId,
       fromDeviceName: sender.deviceName,
+      notificationId: notification.id,
+      fromHost,
     });
-    if (!delivered) {
-      return res.status(409).json({ success: false, message: "That device is offline. The buzzer requires its app to be connected." });
-    }
-    return res.json({ success: true, message: "Buzzer sent." });
+    return res.json({ success: true, delivered, message: delivered
+      ? "Alert sent. They can also find it in Notifications."
+      : "Notification saved. They will see it when they reopen the app." });
   } catch (error) {
     return res.status(400).json({ success: false, message: error.message });
   }

@@ -1,7 +1,10 @@
 const { randomBytes, randomInt } = require("node:crypto");
 const { pool } = require("../config/database");
+const { assessConnectionRange } = require("./mobileRange");
+const { updateRangeAlerts } = require("./mobileRangeService");
+const { getDeviceConnections, MAX_LINKED_DEVICES_PER_HOST } = require("./connectionService");
 
-const DEFAULT_SEARCH_RADIUS_METERS = 5_000;
+const DEFAULT_SEARCH_RADIUS_METERS = 2_000;
 
 const DEVICE_SELECT = `
   id AS "_id",
@@ -14,6 +17,9 @@ const DEVICE_SELECT = `
   status,
   location,
   last_seen AS "lastSeen",
+  location_updated_at AS "locationUpdatedAt",
+  location_accuracy AS "accuracy",
+  sharing_enabled AS "sharingEnabled",
   created_at AS "createdAt",
   updated_at AS "updatedAt"
 `;
@@ -86,6 +92,9 @@ async function registerDevice(deviceData) {
     [deviceId]
   );
   const existing = existingResult.rows[0];
+  if (!deviceData.ownerId || (existing && existing.ownerId !== deviceData.ownerId)) {
+    throw new Error("This installation belongs to another account or is a legacy device. Register a new device identity.");
+  }
   const connectionCode = existing?.connectionCode || await createUniqueConnectionCode();
   const values = [
     existing?._id || randomBytes(12).toString("hex"),
@@ -108,9 +117,11 @@ async function registerDevice(deviceData) {
          device_type = EXCLUDED.device_type,
          platform = EXCLUDED.platform,
          updated_at = NOW()
+       WHERE devices.owner_id = EXCLUDED.owner_id
        RETURNING ${DEVICE_SELECT}`,
       values
     );
+    if (!result.rows[0]) throw new Error("This device belongs to another account.");
     return result.rows[0];
   } catch (error) {
     if (error.code === "23505" && !existing) {
@@ -119,7 +130,7 @@ async function registerDevice(deviceData) {
         `SELECT ${DEVICE_SELECT} FROM devices WHERE device_id = $1`,
         [deviceId]
       );
-      if (retry.rows[0]) return retry.rows[0];
+      if (retry.rows[0]?.ownerId === deviceData.ownerId) return retry.rows[0];
     }
     throw error;
   }
@@ -133,6 +144,14 @@ async function getDevice(deviceId) {
   return result.rows[0] || null;
 }
 
+async function hideUnavailableInvitation(device) {
+  if (!device) return device;
+  const active = (await getDeviceConnections(device.deviceId)).filter((link) => ["accepted", "pending"].includes(link.status));
+  const canInvite = !active.some((link) => link.requesterId === device.deviceId)
+    && active.length < MAX_LINKED_DEVICES_PER_HOST;
+  return { ...device, connectionCode: canInvite ? device.connectionCode : null };
+}
+
 async function getAllDevices() {
   const result = await pool.query(
     `SELECT device_id AS "deviceId", device_name AS "deviceName",
@@ -143,19 +162,6 @@ async function getAllDevices() {
   return result.rows;
 }
 
-async function getPeerIds(deviceId) {
-  const normalizedId = normalizeDeviceId(deviceId);
-  const result = await pool.query(
-    `SELECT requester_id AS "requesterId", receiver_id AS "receiverId"
-     FROM connections
-     WHERE status = 'accepted' AND (requester_id = $1 OR receiver_id = $1)`,
-    [normalizedId]
-  );
-  return result.rows.map((connection) =>
-    connection.requesterId === normalizedId ? connection.receiverId : connection.requesterId
-  );
-}
-
 async function getNearbyDevices(latitude, longitude, radius, deviceId) {
   validateCoordinates(latitude, longitude);
   const normalizedId = normalizeDeviceId(deviceId);
@@ -164,39 +170,35 @@ async function getNearbyDevices(latitude, longitude, radius, deviceId) {
     throw new Error("radius must be a positive number");
   }
 
-  const peerIds = await getPeerIds(normalizedId);
-  if (peerIds.length === 0) return [];
-
-  const result = await pool.query(
-    `SELECT device_id AS "deviceId", device_name AS "deviceName", status,
-            location, last_seen AS "lastSeen"
-     FROM devices WHERE device_id = ANY($1::text[]) AND status = 'online'`,
-    [peerIds]
-  );
-
-  return result.rows
+  const peers = await getConnectedDevices(normalizedId);
+  return peers
     .map((device) => {
       const point = coordinatesFromLocation(device.location);
       if (!point) return null;
       return { ...device, distance: distanceMeters(latitude, longitude, point.latitude, point.longitude) };
     })
-    .filter((device) => device && device.distance <= searchRadius)
+    .filter((device) => device && device.distance <= Math.min(searchRadius, device.rangeMeters))
     .sort((first, second) => first.distance - second.distance)
     .map(({ distance, ...device }) => device);
 }
 
 async function getConnectedDevices(deviceId) {
-  const peerIds = await getPeerIds(deviceId);
-  if (peerIds.length === 0) return [];
-
-  const result = await pool.query(
-    `SELECT device_id AS "deviceId", device_name AS "deviceName", status,
-            location, last_seen AS "lastSeen"
-     FROM devices WHERE device_id = ANY($1::text[])`,
-    [peerIds]
-  );
-  const byId = new Map(result.rows.map((device) => [device.deviceId, device]));
-  return peerIds.map((peerId) => byId.get(peerId)).filter(Boolean);
+  const id = normalizeDeviceId(deviceId);
+  const result = await pool.query(`SELECT d.device_id AS "deviceId", d.device_name AS "deviceName", d.status,
+      d.location, d.last_seen AS "lastSeen", d.location_updated_at AS "locationUpdatedAt",
+      d.location_accuracy AS accuracy, d.sharing_enabled AS "sharingEnabled",
+      c.range_meters AS "rangeMeters", c.out_of_range_since AS "outOfRangeSince", clock_timestamp() AS "assessedAt",
+      jsonb_build_object('location', self.location, 'locationUpdatedAt', self.location_updated_at,
+        'accuracy', self.location_accuracy, 'sharingEnabled', self.sharing_enabled, 'status', self.status) AS self
+      FROM connections c JOIN devices d ON d.device_id =
+        CASE WHEN c.requester_id = $1 THEN c.receiver_id ELSE c.requester_id END
+      JOIN devices self ON self.device_id = $1
+      WHERE c.status = 'accepted' AND (c.requester_id = $1 OR c.receiver_id = $1)
+      ORDER BY c.accepted_at`, [id]);
+  return result.rows.map(({ self, assessedAt, ...peer }) => {
+    const range = assessConnectionRange(self, peer, peer.rangeMeters, assessedAt.getTime());
+    return { ...peer, ...range, location: range.rangeState === "within-range" ? peer.location : null };
+  });
 }
 
 async function updateDeviceStatus(deviceId, status) {
@@ -211,20 +213,22 @@ async function updateDeviceStatus(deviceId, status) {
     [normalizedId, status]
   );
   if (!result.rows[0]) throw new Error(`Device ${normalizedId} is not registered`);
+  await updateRangeAlerts(normalizedId);
   return result.rows[0];
 }
 
-async function updateDeviceLocation(deviceId, latitude, longitude) {
+async function updateDeviceLocation(deviceId, latitude, longitude, accuracy) {
   const normalizedId = normalizeDeviceId(deviceId);
   validateCoordinates(latitude, longitude);
   const location = { type: "Point", coordinates: [longitude, latitude] };
 
   const result = await pool.query(
-    `UPDATE devices SET location = $2::jsonb, last_seen = NOW(), updated_at = NOW()
-     WHERE device_id = $1 RETURNING ${DEVICE_SELECT}`,
-    [normalizedId, JSON.stringify(location)]
+    `UPDATE devices SET location = $2::jsonb, last_seen = NOW(), updated_at = NOW(), location_updated_at = NOW(), location_accuracy = $3
+     WHERE device_id = $1 AND sharing_enabled = TRUE RETURNING ${DEVICE_SELECT}`,
+    [normalizedId, JSON.stringify(location), Number.isFinite(accuracy) && accuracy >= 0 ? accuracy : null]
   );
   if (!result.rows[0]) throw new Error(`Device ${normalizedId} is not registered`);
+  await updateRangeAlerts(normalizedId);
   return result.rows[0];
 }
 
@@ -249,13 +253,23 @@ async function saveLocationHistory(deviceId, latitude, longitude, accuracy, spee
   return result.rows[0];
 }
 
+async function setLocationSharing(deviceId, enabled) {
+  if (typeof enabled !== "boolean") throw new Error("sharingEnabled must be true or false.");
+  await pool.query(`UPDATE devices SET sharing_enabled = $2,
+    location = CASE WHEN $2 THEN location ELSE NULL END,
+    location_updated_at = CASE WHEN $2 THEN location_updated_at ELSE NULL END,
+    location_accuracy = CASE WHEN $2 THEN location_accuracy ELSE NULL END WHERE device_id = $1`, [deviceId, enabled]);
+}
+
 module.exports = {
   registerDevice,
   getDevice,
+  hideUnavailableInvitation,
   getAllDevices,
   getNearbyDevices,
   getConnectedDevices,
   updateDeviceStatus,
   updateDeviceLocation,
   saveLocationHistory,
+  setLocationSharing,
 };

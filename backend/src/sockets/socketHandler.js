@@ -11,6 +11,21 @@ const {
 const registerWebRtcHandlers = require("./webrtcHandler");
 const lastLocationUpdateByDevice = new Map();
 const MIN_LOCATION_UPDATE_INTERVAL_MS = 5_000;
+const pendingOperations = new Set();
+function track(operation) {
+  const pending = operation();
+  pendingOperations.add(pending);
+  void pending.then(() => pendingOperations.delete(pending), () => pendingOperations.delete(pending));
+}
+const { verifyMobileToken, ownsDevice } = require("../middleware/mobileAuth");
+
+async function notifyPeers(io, deviceId, event, payload) {
+  const peers = await connectionService.getConnectedDeviceIds(deviceId);
+  for (const peerId of peers) {
+    const id = getDeviceSocket(peerId);
+    if (id) io.to(id).emit(event, payload);
+  }
+}
 
 function emitDeviceError(socket, code, message) {
   socket.emit("device-error", { code, message });
@@ -26,8 +41,7 @@ function isValidCoordinate(latitude, longitude) {
 }
 
 async function sendLatestPeerLocations(socket, deviceId) {
-  const peerIds = await connectionService.getConnectedDeviceIds(deviceId);
-  const peers = await Promise.all(peerIds.map((peerId) => deviceService.getDevice(peerId)));
+  const peers = await deviceService.getConnectedDevices(deviceId);
 
   for (const peer of peers) {
     const coordinates = peer?.location?.coordinates;
@@ -37,9 +51,13 @@ async function sendLatestPeerLocations(socket, deviceId) {
       deviceId: peer.deviceId,
       longitude: coordinates[0],
       latitude: coordinates[1],
-      accuracy: null,
+      accuracy: peer.accuracy,
+      timestamp: peer.locationUpdatedAt,
       speed: null,
       heading: null,
+      rangeState: peer.rangeState,
+      rangeMeters: peer.rangeMeters,
+      distanceMeters: peer.distanceMeters,
     });
   }
 }
@@ -47,7 +65,7 @@ async function sendLatestPeerLocations(socket, deviceId) {
 async function handleDeviceOnline(io, socket, data = {}) {
   data = data && typeof data === "object" ? data : {};
   const deviceId = typeof data.deviceId === "string" ? data.deviceId.trim() : "";
-  if (!deviceId) {
+  if (!deviceId || deviceId !== socket.data.authorizedDeviceId) {
     emitDeviceError(socket, "DEVICE_ID_REQUIRED", "deviceId is required.");
     return;
   }
@@ -75,11 +93,13 @@ async function handleDeviceOnline(io, socket, data = {}) {
     setDeviceSocket(deviceId, socket.id);
 
     if (previousSocketId && previousSocketId !== socket.id) {
+      io.sockets.sockets.get(previousSocketId)?.emit("device-replaced");
       io.sockets.sockets.get(previousSocketId)?.disconnect(true);
     }
 
     console.log(`[socket] Device online: ${deviceId}`);
-    io.emit("device-status", { deviceId, status: "online" });
+    await notifyPeers(io, deviceId, "device-status", { deviceId, status: "online" });
+    socket.emit("device-ready", { deviceId });
     await sendLatestPeerLocations(socket, deviceId);
   } catch (error) {
     console.error(`[socket:device-online] ${error.message}`);
@@ -106,10 +126,10 @@ async function handleDeviceLocation(io, socket, data = {}) {
   lastLocationUpdateByDevice.set(deviceId, now);
 
   try {
-    await deviceService.updateDeviceLocation(deviceId, latitude, longitude);
+    const updated = await deviceService.updateDeviceLocation(deviceId, latitude, longitude, accuracy);
     await deviceService.saveLocationHistory(deviceId, latitude, longitude, accuracy, speed, heading);
 
-    const peers = await connectionService.getConnectedDeviceIds(deviceId);
+    const peers = await deviceService.getConnectedDevices(deviceId);
     const payload = {
       deviceId,
       latitude,
@@ -117,11 +137,22 @@ async function handleDeviceLocation(io, socket, data = {}) {
       accuracy: Number.isFinite(accuracy) ? accuracy : null,
       speed: Number.isFinite(speed) ? speed : null,
       heading: Number.isFinite(heading) ? heading : null,
+      timestamp: updated.locationUpdatedAt,
     };
 
-    for (const peerId of peers) {
-      const peerSocketId = getDeviceSocket(peerId);
-      if (peerSocketId) io.to(peerSocketId).emit("device-location", payload);
+    for (const peer of peers) {
+      const peerSocketId = getDeviceSocket(peer.deviceId);
+      const range = { rangeState: peer.rangeState, rangeMeters: peer.rangeMeters, distanceMeters: peer.distanceMeters };
+      if (peer.location) {
+        if (peerSocketId) io.to(peerSocketId).emit("device-location", { ...payload, ...range });
+        // Moving the host back in range must also restore members on the host's map.
+        socket.emit("device-location", { deviceId: peer.deviceId, longitude: peer.location.coordinates[0],
+          latitude: peer.location.coordinates[1], accuracy: peer.accuracy, timestamp: peer.locationUpdatedAt,
+          speed: null, heading: null, ...range });
+      } else {
+        if (peerSocketId) io.to(peerSocketId).emit("device-location-unavailable", { deviceId, ...range });
+        socket.emit("device-location-unavailable", { deviceId: peer.deviceId, ...range });
+      }
     }
   } catch (error) {
     console.error(`[socket:device-location] ${error.message}`);
@@ -158,7 +189,7 @@ async function handleConnectionDecision(socket, data = {}, decision) {
     const action = decision === "accepted"
       ? connectionService.acceptConnection
       : connectionService.rejectConnection;
-    const connection = await action(data.connectionId, socket.deviceId);
+    const connection = await action(data.connectionId, socket.deviceId, data.rangeMeters);
 
     if (decision === "accepted") notifyConnectionAccepted(connection);
     else notifyConnectionRejected(connection);
@@ -171,18 +202,28 @@ async function handleConnectionDecision(socket, data = {}, decision) {
 }
 
 function socketHandler(io) {
+  io.use(async (socket, next) => {
+    try {
+      const user = await verifyMobileToken(socket.handshake.auth?.token);
+      const deviceId = socket.handshake.auth?.deviceId;
+      if (!await ownsDevice(user.uid, deviceId)) throw new Error("Register this device with your account before connecting.");
+      socket.data.authorizedDeviceId = deviceId;
+      socket.data.tokenExpiresAt = user.expiresAt;
+      next();
+    } catch (error) { next(new Error(error.message)); }
+  });
   io.on("connection", (socket) => {
+    const expiry = setTimeout(() => socket.disconnect(true), Math.max(1, socket.data.tokenExpiresAt - Date.now()));
+    expiry.unref?.();
     console.log(`[socket] Connected: ${socket.id}`);
 
-    socket.on("device-online", (data) => handleDeviceOnline(io, socket, data));
-    socket.on("device-location", (data) => handleDeviceLocation(io, socket, data));
-    socket.on("send-connection-request", (data) => handleConnectionRequest(socket, data));
-    socket.on("accept-connection", (data) => handleConnectionDecision(socket, data, "accepted"));
-    socket.on("reject-connection", (data) => handleConnectionDecision(socket, data, "rejected"));
+    socket.on("device-online", (data) => track(() => handleDeviceOnline(io, socket, data)));
+    socket.on("device-location", (data) => track(() => handleDeviceLocation(io, socket, data)));
 
     registerWebRtcHandlers(io, socket);
 
-    socket.on("disconnect", async (reason) => {
+    socket.on("disconnect", (reason) => track(async () => {
+      clearTimeout(expiry);
       const deviceId = socket.deviceId;
       if (!deviceId || getDeviceSocket(deviceId) !== socket.id) return;
 
@@ -190,13 +231,16 @@ function socketHandler(io) {
       lastLocationUpdateByDevice.delete(deviceId);
       try {
         await deviceService.updateDeviceStatus(deviceId, "offline");
-        io.emit("device-status", { deviceId, status: "offline" });
+        await notifyPeers(io, deviceId, "device-status", { deviceId, status: "offline" });
         console.log(`[socket] Device offline: ${deviceId} (${reason})`);
       } catch (error) {
         console.error(`[socket:disconnect] ${error.message}`);
       }
-    });
+    }));
   });
 }
 
+socketHandler.drain = async () => {
+  while (pendingOperations.size) await Promise.allSettled([...pendingOperations]);
+};
 module.exports = socketHandler;

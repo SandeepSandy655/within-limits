@@ -4,6 +4,9 @@
   "description": "IoT P2P device tracking backend",
   "main": "src/server.js",
   "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:local": "node src/scripts/testLocal.js",
+    "tracking:provision": "node src/scripts/provisionReporter.js",
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "admin:dev": "npm --prefix admin-web run dev",

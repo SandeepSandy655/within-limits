@@ -10,7 +10,8 @@ function sendError(res, error, status = 500) {
 
 async function registerDevice(req, res) {
   try {
-    const device = await deviceService.registerDevice(req.body);
+    const device = await deviceService.hideUnavailableInvitation(
+      await deviceService.registerDevice({ ...req.body, ownerId: req.mobileUser.uid }));
     return res.status(201).json({
       success: true,
       message: "Device registered successfully",
@@ -27,7 +28,7 @@ async function getDevice(req, res) {
     if (!device) {
       return res.status(404).json({ success: false, message: "Device not found" });
     }
-    return res.json({ success: true, device });
+    return res.json({ success: true, device: await deviceService.hideUnavailableInvitation(device) });
   } catch (error) {
     return sendError(res, error);
   }
@@ -77,7 +78,7 @@ async function getNearbyDevices(req, res) {
     return res.json({
       success: true,
       count: devices.length,
-      radius: parsedRadius ?? 5_000,
+      radius: Math.min(parsedRadius ?? 2_000, 2_000),
       devices,
     });
   } catch (error) {

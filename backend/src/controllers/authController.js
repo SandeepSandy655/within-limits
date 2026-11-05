@@ -1,3 +1,5 @@
+const { isEmailVerificationRequired } = require("../config/authPolicy");
+
 function getFirebaseClientConfig(_req, res) {
   const config = {
     apiKey: process.env.FIREBASE_WEB_API_KEY,
@@ -13,7 +15,8 @@ function getFirebaseClientConfig(_req, res) {
       missing,
     });
   }
-  return res.json({ success: true, firebase: config });
+  res.set("Cache-Control", "no-store");
+  return res.json({ success: true, firebase: config, requireEmailVerification: isEmailVerificationRequired() });
 }
 
 module.exports = { getFirebaseClientConfig };

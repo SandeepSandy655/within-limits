@@ -4,3 +4,13 @@ npm-debug.log
 atlas-credentials.env
 serviceAccountKey.json
 .git
+
+**/node_modules
+**/.env
+**/.env.*
+public/admin
+.private
+**/*.md
+**/dist
+**/dist-*
+**/.vercel

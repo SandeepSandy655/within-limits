@@ -19,9 +19,19 @@
 // Classic ESP32, built-in BLE. Select Huge APP partition for BLE + Wi-Fi.
 constexpr char SERVICE_UUID[] = "4f6c0001-b5a3-4f01-9f58-51f59c12a001";
 constexpr char TAG_ID_UUID[] = "4f6c0002-b5a3-4f01-9f58-51f59c12a001";
-constexpr int BUZZER_PIN = 25;
-// Starting thresholds to calibrate on site; RSSI is not a distance in metres.
-constexpr int NEAR_RSSI = -65, FAR_RSSI = -78;
+// Buzzer signal wire is connected to D23 (GPIO23), as in the user's wiring.
+constexpr int BUZZER_PIN = 23;
+// Buzzer sound frequency: 2000 Hz (2 kHz).
+constexpr int BUZZER_FREQUENCY_HZ = 2000;
+
+// ONE-METRE PROXIMITY CALIBRATION:
+// RSSI is NOT a direct measurement in metres. First measure the filtered RSSI
+// with the Android phone connected and held exactly 1 metre from the ESP32.
+// Set FAR_RSSI to that measured value (for example, -70). When the signal is
+// weaker than this threshold for several samples, the system marks FAR.
+// Adjust this one value later to change the practical alert boundary.
+constexpr int FAR_RSSI = -70;   // <-- CHANGE THIS after the 1-metre calibration.
+constexpr int NEAR_RSSI = FAR_RSSI + 6; // Hysteresis prevents rapid NEAR/FAR flicker.
 constexpr uint32_t LOST_MS = 8000, REPORT_MS = 5000;
 
 struct LinkSample {
@@ -34,7 +44,8 @@ LinkSample linkSample = {};
 portMUX_TYPE linkLock = portMUX_INITIALIZER_UNLOCKED;
 Preferences settings;
 char tagId[16], bootId[33];
-// 0 = unconfigured/off; 1 = active LOW; 2 = active HIGH.
+// 0 = disabled; 1 or 2 = enabled (kept for compatibility with saved settings).
+// The buzzer is driven with tone(), so HIGH/LOW polarity selection is not used.
 uint8_t buzzerMode = 0;
 bool armed = false, haveFilter = false;
 float filteredRssi = 0;
@@ -111,6 +122,8 @@ void updateProximity(uint32_t now) {
     lastSample = sample.sampledAt;
     filteredRssi = haveFilter ? 0.25f * sample.rssi + 0.75f * filteredRssi : sample.rssi;
     haveFilter = true;
+    Serial.printf("BLE RSSI raw: %d dBm | filtered: %.1f dBm | 1m threshold: %d dBm\\n",
+                  sample.rssi, filteredRssi, FAR_RSSI);
     if (filteredRssi >= NEAR_RSSI) { nearCount = min(nearCount + 1, 3); farCount = 0; }
     else if (filteredRssi <= FAR_RSSI) { farCount = min(farCount + 1, 4); nearCount = 0; }
     else { nearCount = farCount = 0; }
@@ -125,9 +138,15 @@ void updateProximity(uint32_t now) {
 }
 
 void driveBuzzer(bool on) {
-  if (!buzzerMode) return;
-  const bool activeLow = buzzerMode == 1;
-  digitalWrite(BUZZER_PIN, on ? (activeLow ? LOW : HIGH) : (activeLow ? HIGH : LOW));
+  if (!buzzerMode || !on) {
+    // Stop the waveform completely. This avoids a DC level that may only click.
+    noTone(BUZZER_PIN);
+    return;
+  }
+
+  // Generate an audible square-wave tone instead of a steady HIGH/LOW signal.
+  // This is important for passive piezo buzzers, which otherwise may only click.
+  tone(BUZZER_PIN, BUZZER_FREQUENCY_HZ);
 }
 
 void readBuzzerSetup(uint32_t now) {
@@ -136,11 +155,11 @@ void readBuzzerSetup(uint32_t now) {
     if (command == 'l' || command == 'h') {
       buzzerMode = command == 'l' ? 1 : 2;
       settings.putUChar("buzzer", buzzerMode);
-      driveBuzzer(false);
       pinMode(BUZZER_PIN, OUTPUT);
+      driveBuzzer(false);
       testingBuzzer = true;
       testStarted = now;
-      Serial.println("Buzzer test: short beep, then silence expected.");
+      Serial.println("Buzzer enabled. Testing a 1-second 2kHz tone.");
     } else if (command == 't' && buzzerMode) {
       testingBuzzer = true; testStarted = now;
     } else if (command == 'x') {
@@ -149,12 +168,15 @@ void readBuzzerSetup(uint32_t now) {
       settings.putUChar("buzzer", 0);
       pinMode(BUZZER_PIN, INPUT);
       testingBuzzer = false;
-      Serial.println("Buzzer disabled. Disconnect its VCC before changing wires.");
+      Serial.println("Buzzer disabled.");
     }
   }
-  if (testingBuzzer && now - testStarted >= 300) testingBuzzer = false;
+  // Manual test: one full second of audible tone.
+  if (testingBuzzer && now - testStarted >= 1000) testingBuzzer = false;
+
   const bool alarm = armed && (state == Proximity::Far || state == Proximity::Lost);
-  driveBuzzer(testingBuzzer || (alarm && (now % 1000 < 250)));
+  // Proximity alarm pattern: 600ms tone followed by 400ms silence.
+  driveBuzzer(testingBuzzer || (alarm && (now % 1000 < 600)));
 }
 
 bool missing(const char* value) { return !value[0] || strstr(value, "CHANGE_ME") || strstr(value, "YOUR_PC_IP"); }
@@ -251,8 +273,15 @@ void setup() {
   settings.begin("wl-proximity", false);
   buzzerMode = settings.getUChar("buzzer", 0);
   if (buzzerMode > 2) buzzerMode = 0;
-  if (buzzerMode) { driveBuzzer(false); pinMode(BUZZER_PIN, OUTPUT); }
-  else { pinMode(BUZZER_PIN, INPUT); Serial.println("Buzzer setup: send L for active-low or H for active-high; T tests it."); }
+  if (buzzerMode) {
+    pinMode(BUZZER_PIN, OUTPUT);
+    driveBuzzer(false);
+    Serial.println("Buzzer enabled. Send T in Serial Monitor to test; X disables it.");
+  } else {
+    pinMode(BUZZER_PIN, OUTPUT);
+    driveBuzzer(false);
+    Serial.println("Buzzer disabled. Send L or H to enable; T tests it.");
+  }
   const uint64_t chip = ESP.getEfuseMac();
   snprintf(tagId, sizeof(tagId), "WL-%04X%08lX", static_cast<unsigned int>((chip >> 32) & 0xFFFF), static_cast<unsigned long>(chip & 0xFFFFFFFF));
   BLEDevice::init(tagId);
@@ -275,7 +304,9 @@ void setup() {
     Serial.println("Network task failed. Reset the board.");
   }
   Serial.print("BLE name: "); Serial.println(tagId);
-  Serial.println("nRF Connect: connect to this name and keep the phone nearby to arm.");
+  Serial.println("nRF Connect: scan for this ESP32 name, CONNECT, and keep the link active.");
+  Serial.println("Buzzer setup: send L (active-low) or H (active-high), then T to test.");
+  Serial.println("For 1m calibration: hold phone exactly 1m away and note filtered RSSI.");
 }
 
 void loop() {

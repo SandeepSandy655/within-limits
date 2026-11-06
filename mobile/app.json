@@ -29,7 +29,9 @@
       [
         "expo-router",
         {
-          "asyncRoutes": { "web": "production" }
+          "asyncRoutes": {
+            "web": "production"
+          }
         }
       ],
       [
@@ -44,6 +46,17 @@
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "firebaseProjectId": "within-limits-540d8",
+      "router": {
+        "asyncRoutes": {
+          "web": "production"
+        }
+      },
+      "eas": {
+        "projectId": "b5e95aa1-5af4-4b4a-ab0e-5e8e607ded5b"
+      }
     }
   }
 }

@@ -81,11 +81,16 @@ const port = Number(process.env.PORT) || 5000;
 async function startServer() {
   await connectDatabase();
   // Presence belongs to this single Socket.IO process; persisted statuses cannot survive a restart.
-  await pool.query("UPDATE devices SET status = 'offline' WHERE status = 'online'");
+  await pool.query(
+    "UPDATE devices SET status = 'offline' WHERE status = 'online'"
+  );
+  
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, () => {
+  
+    server.listen(port, "0.0.0.0", () => {
       server.off("error", reject);
+  
       console.log(`[server] Listening on port ${port}`);
       resolve();
     });

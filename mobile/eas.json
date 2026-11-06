@@ -1,23 +1,54 @@
+
 {
-  "cli": { "appVersionSource": "remote" },
+  "cli": {
+    "appVersionSource": "remote"
+  },
   "build": {
-    "base": { "node": "24.22.1" },
+    "base": {
+      "node": "24.22.1"
+    },
     "development": {
-      "extends": "base", "developmentClient": true, "distribution": "internal", "environment": "development",
-      "env": { "EXPO_PUBLIC_LOCAL_BACKEND": "true" }
+      "extends": "base",
+      "developmentClient": true,
+      "distribution": "internal",
+      "environment": "development",
+      "env": {
+        "EXPO_PUBLIC_LOCAL_BACKEND": "true"
+      }
     },
     "preview-local": {
-      "extends": "base", "distribution": "internal", "environment": "preview",
-      "android": { "buildType": "apk" },
-      "env": { "EXPO_PUBLIC_LOCAL_BACKEND": "true", "EXPO_PUBLIC_API_URL": "" }
+      "extends": "base",
+      "distribution": "internal",
+      "environment": "preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_LOCAL_BACKEND": "true",
+        "EXPO_PUBLIC_API_URL": "http://10.64.9.109:5000"
+      }
     },
     "preview": {
-      "extends": "base", "distribution": "internal", "environment": "preview",
-      "android": { "buildType": "apk" }, "env": { "EXPO_PUBLIC_LOCAL_BACKEND": "false" }
+      "extends": "base",
+      "distribution": "internal",
+      "environment": "preview",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_LOCAL_BACKEND": "false"
+      }
     },
     "production": {
-      "extends": "base", "autoIncrement": true, "environment": "production",
-      "android": { "buildType": "app-bundle" }, "env": { "EXPO_PUBLIC_LOCAL_BACKEND": "false" }
+      "extends": "base",
+      "autoIncrement": true,
+      "environment": "production",
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_LOCAL_BACKEND": "false"
+      }
     }
   }
 }
